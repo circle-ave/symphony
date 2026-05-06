@@ -771,6 +771,63 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.should_dispatch_comment_reply_issue_for_test(new_issue, state)
   end
 
+  test "normal dispatch preserves a slot for comment replies" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: ["Todo"],
+      tracker_comment_reply_states: ["In Review"],
+      tracker_terminal_states: ["Done"],
+      max_concurrent_agents: 2
+    )
+
+    state = %Orchestrator.State{
+      running: %{
+        "issue-running" => %{
+          issue: %Issue{id: "issue-running", identifier: "MT-568", state: "Todo"},
+          identifier: "MT-568"
+        }
+      },
+      claimed: MapSet.new(["issue-running"]),
+      comment_reply_seen: %{},
+      max_concurrent_agents: 2
+    }
+
+    normal_issue = %Issue{id: "issue-normal", identifier: "MT-569", title: "Normal issue", state: "Todo"}
+
+    reply_issue = %Issue{
+      id: "issue-reply",
+      identifier: "MT-570",
+      state: "In Review",
+      latest_comment_id: "comment-1"
+    }
+
+    refute Orchestrator.should_dispatch_issue_for_test(normal_issue, state)
+    assert Orchestrator.should_dispatch_comment_reply_issue_for_test(reply_issue, state)
+  end
+
+  test "normal dispatch uses the last slot when comment replies are disabled" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: ["Todo"],
+      tracker_comment_reply_states: [],
+      tracker_terminal_states: ["Done"],
+      max_concurrent_agents: 2
+    )
+
+    state = %Orchestrator.State{
+      running: %{
+        "issue-running" => %{
+          issue: %Issue{id: "issue-running", identifier: "MT-571", state: "Todo"},
+          identifier: "MT-571"
+        }
+      },
+      claimed: MapSet.new(["issue-running"]),
+      max_concurrent_agents: 2
+    }
+
+    normal_issue = %Issue{id: "issue-normal", identifier: "MT-572", title: "Normal issue", state: "Todo"}
+
+    assert Orchestrator.should_dispatch_issue_for_test(normal_issue, state)
+  end
+
   test "comment reply completion records latest comment as seen" do
     issue_id = "issue-comment-complete"
     ref = make_ref()

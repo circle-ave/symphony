@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @comment_reply_reserved_slots 1
   @comment_reply_marker "<!-- symphony-comment-reply -->"
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
@@ -258,8 +259,8 @@ defmodule SymphonyElixir.Orchestrator do
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          {:ok, comment_reply_issues} <- fetch_comment_reply_issues() do
       state = bootstrap_comment_reply_seen(state, comment_reply_issues)
-      state = choose_issues(issues, state)
-      choose_comment_reply_issues(comment_reply_issues, state)
+      state = choose_comment_reply_issues(comment_reply_issues, state)
+      choose_issues(issues, state)
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
@@ -942,7 +943,7 @@ defmodule SymphonyElixir.Orchestrator do
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       !Map.has_key?(blocked, issue.id) and
-      available_slots(state) > 0 and
+      normal_issue_slots_available?(state) and
       state_slots_available?(issue, running) and
       worker_slots_available?(state)
   end
@@ -1478,6 +1479,20 @@ defmodule SymphonyElixir.Orchestrator do
     )
   end
 
+  defp normal_issue_slots_available?(%State{} = state) do
+    available_slots(state) > reserved_comment_reply_slots(state)
+  end
+
+  defp reserved_comment_reply_slots(%State{} = state) do
+    max_agents = state.max_concurrent_agents || Config.settings!().agent.max_concurrent_agents
+
+    if max_agents > 1 and MapSet.size(comment_reply_state_set()) > 0 do
+      @comment_reply_reserved_slots
+    else
+      0
+    end
+  end
+
   @spec request_refresh() :: map() | :unavailable
   def request_refresh do
     request_refresh(__MODULE__)
@@ -1749,7 +1764,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_slots_available?(%Issue{} = issue, %State{} = state) do
-    available_slots(state) > 0 and state_slots_available?(issue, state.running)
+    normal_issue_slots_available?(state) and state_slots_available?(issue, state.running)
   end
 
   defp apply_codex_token_delta(
