@@ -710,8 +710,17 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp dynamic_tool_output(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text), do: text
   defp dynamic_tool_output(result), do: Jason.encode!(result, pretty: true)
 
-  defp dynamic_tool_wire_result(%{"output" => output}) when is_binary(output), do: output
-  defp dynamic_tool_wire_result(result), do: dynamic_tool_output(result)
+  defp dynamic_tool_wire_result(%{"contentItems" => content_items}) when is_list(content_items) do
+    %{"contentItems" => content_items}
+  end
+
+  defp dynamic_tool_wire_result(%{"output" => output}) when is_binary(output) do
+    %{"contentItems" => dynamic_tool_content_items(output)}
+  end
+
+  defp dynamic_tool_wire_result(result) do
+    %{"contentItems" => dynamic_tool_content_items(dynamic_tool_output(result))}
+  end
 
   defp dynamic_tool_content_items(output) when is_binary(output) do
     [
