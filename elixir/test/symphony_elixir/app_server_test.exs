@@ -889,11 +889,8 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
 
                  payload["id"] == 101 and
-                   get_in(payload, ["result", "success"]) == false and
-                   String.contains?(
-                     get_in(payload, ["result", "output"]),
-                     "Unsupported dynamic tool"
-                   )
+                   is_binary(payload["result"]) and
+                   String.contains?(payload["result"], "Unsupported dynamic tool")
                else
                  false
                end
@@ -1013,9 +1010,7 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
 
                  payload["id"] == 102 and
-                   get_in(payload, ["result", "success"]) == true and
-                   get_in(payload, ["result", "output"]) ==
-                     ~s({"data":{"viewer":{"id":"usr_123"}}})
+                   payload["result"] == ~s({"data":{"viewer":{"id":"usr_123"}}})
                else
                  false
                end
