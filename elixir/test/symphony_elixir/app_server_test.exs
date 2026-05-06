@@ -889,8 +889,18 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
 
                  payload["id"] == 101 and
-                   is_binary(payload["result"]) and
-                   String.contains?(payload["result"], "Unsupported dynamic tool")
+                   match?(
+                     %{
+                       "contentItems" => [
+                         %{"type" => "inputText", "text" => tool_output}
+                       ]
+                     }
+                     when is_binary(tool_output),
+                     payload["result"]
+                   ) and
+                   payload["result"]
+                   |> get_in(["contentItems", Access.at(0), "text"])
+                   |> String.contains?("Unsupported dynamic tool")
                else
                  false
                end
@@ -1010,7 +1020,14 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
 
                  payload["id"] == 102 and
-                   payload["result"] == ~s({"data":{"viewer":{"id":"usr_123"}}})
+                   payload["result"] == %{
+                     "contentItems" => [
+                       %{
+                         "type" => "inputText",
+                         "text" => ~s({"data":{"viewer":{"id":"usr_123"}}})
+                       }
+                     ]
+                   }
                else
                  false
                end
