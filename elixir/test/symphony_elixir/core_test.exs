@@ -14,6 +14,7 @@ defmodule SymphonyElixir.CoreTest do
     config = Config.settings!()
     assert config.polling.interval_ms == 30_000
     assert config.tracker.active_states == ["Todo", "In Progress"]
+    assert config.tracker.comment_reply_states == []
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
@@ -29,6 +30,9 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 45_000)
     assert Config.settings!().polling.interval_ms == 45_000
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_comment_reply_states: ["In Review"])
+    assert Config.settings!().tracker.comment_reply_states == ["In Review"]
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 0)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -547,6 +551,41 @@ defmodule SymphonyElixir.CoreTest do
     refute MapSet.member?(updated_state.claimed, issue_id)
     assert updated_state.running == %{}
     assert updated_state.retry_attempts == %{}
+  end
+
+  test "comment reply dispatch only runs for unseen latest comments" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_comment_reply_states: ["In Review"],
+      tracker_terminal_states: ["Done"],
+      max_concurrent_agents: 2
+    )
+
+    old_issue = %Issue{
+      id: "issue-comment-old",
+      identifier: "MT-563",
+      title: "Already seen comment",
+      state: "In Review",
+      latest_comment_id: "comment-1"
+    }
+
+    new_issue = %Issue{
+      id: "issue-comment-new",
+      identifier: "MT-564",
+      title: "New review comment",
+      state: "In Review",
+      latest_comment_id: "comment-2"
+    }
+
+    state = %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new(),
+      comment_reply_seen: Orchestrator.comment_reply_seen_snapshot_for_test([old_issue]),
+      max_concurrent_agents: 2
+    }
+
+    refute Orchestrator.should_dispatch_comment_reply_issue_for_test(old_issue, state)
+    assert Orchestrator.should_dispatch_comment_reply_issue_for_test(new_issue, state)
   end
 
   test "normal worker exit schedules active-state continuation retry" do

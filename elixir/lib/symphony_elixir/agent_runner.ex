@@ -7,6 +7,8 @@ defmodule SymphonyElixir.AgentRunner do
   alias SymphonyElixir.Codex.AppServer
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
+  @comment_reply_marker "<!-- symphony-comment-reply -->"
+
   @type worker_host :: String.t() | nil
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
@@ -130,7 +132,16 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns) do
+    prompt = PromptBuilder.build_prompt(issue, opts)
+
+    if Keyword.get(opts, :comment_reply, false) do
+      comment_reply_prompt(issue, Keyword.get(opts, :comment_reply_marker, @comment_reply_marker)) <>
+        "\n\n" <> prompt
+    else
+      prompt
+    end
+  end
 
   defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
     """
@@ -143,6 +154,27 @@ defmodule SymphonyElixir.AgentRunner do
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
     """
   end
+
+  defp comment_reply_prompt(%Issue{} = issue, marker) do
+    """
+    Linear comment reply mode:
+
+    - A new actionable Linear comment was left on this issue while it is in `#{issue.state}`.
+    - Reply directly to the latest comment. Do not start unrelated implementation work.
+    - If the comment requests code changes, move the issue to `Rework` before changing files, then follow the normal workflow.
+    - Include this hidden marker at the end of any Linear reply you post so Symphony does not treat its own reply as a new request:
+      #{marker}
+
+    Latest comment:
+    Author: #{issue.latest_comment_user_name || issue.latest_comment_user_id || "unknown"}
+    Created at: #{format_comment_timestamp(issue.latest_comment_created_at)}
+
+    #{issue.latest_comment_body || ""}
+    """
+  end
+
+  defp format_comment_timestamp(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+  defp format_comment_timestamp(_timestamp), do: "unknown"
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do

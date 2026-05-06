@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @comment_reply_marker "<!-- symphony-comment-reply -->"
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -39,7 +40,8 @@ defmodule SymphonyElixir.Orchestrator do
       blocked: %{},
       retry_attempts: %{},
       codex_totals: nil,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      comment_reply_seen: nil
     ]
   end
 
@@ -251,8 +253,10 @@ defmodule SymphonyElixir.Orchestrator do
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
-         true <- available_slots(state) > 0 do
-      choose_issues(issues, state)
+         {:ok, comment_reply_issues} <- fetch_comment_reply_issues() do
+      state = bootstrap_comment_reply_seen(state, comment_reply_issues)
+      state = choose_issues(issues, state)
+      choose_comment_reply_issues(comment_reply_issues, state)
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
@@ -290,9 +294,6 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
-        state
-
-      false ->
         state
     end
   end
@@ -387,6 +388,18 @@ defmodule SymphonyElixir.Orchestrator do
   def dispatch_issue_for_test(%State{} = state, %Issue{} = issue, issue_fetcher)
       when is_function(issue_fetcher, 1) do
     dispatch_issue(state, issue, nil, nil, issue_fetcher)
+  end
+
+  @doc false
+  @spec comment_reply_seen_snapshot_for_test([Issue.t()]) :: map()
+  def comment_reply_seen_snapshot_for_test(issues) when is_list(issues) do
+    comment_reply_seen_snapshot(issues)
+  end
+
+  @doc false
+  @spec should_dispatch_comment_reply_issue_for_test(Issue.t(), term()) :: boolean()
+  def should_dispatch_comment_reply_issue_for_test(%Issue{} = issue, %State{} = state) do
+    should_dispatch_comment_reply_issue?(issue, state, terminal_state_set())
   end
 
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
@@ -770,6 +783,101 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
+  defp fetch_comment_reply_issues do
+    states =
+      Config.settings!().tracker.comment_reply_states
+      |> Enum.map(&to_string/1)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+
+    case states do
+      [] -> {:ok, []}
+      states -> Tracker.fetch_issues_by_states(states)
+    end
+  end
+
+  defp bootstrap_comment_reply_seen(%State{comment_reply_seen: nil} = state, issues)
+       when is_list(issues) do
+    %{state | comment_reply_seen: comment_reply_seen_snapshot(issues)}
+  end
+
+  defp bootstrap_comment_reply_seen(%State{} = state, _issues), do: state
+
+  defp comment_reply_seen_snapshot(issues) when is_list(issues) do
+    issues
+    |> Enum.flat_map(fn
+      %Issue{id: issue_id, latest_comment_id: comment_id}
+      when is_binary(issue_id) and is_binary(comment_id) ->
+        [{issue_id, comment_id}]
+
+      _ ->
+        []
+    end)
+    |> Map.new()
+  end
+
+  defp choose_comment_reply_issues(issues, %State{} = state) when is_list(issues) do
+    terminal_states = terminal_state_set()
+
+    issues
+    |> sort_issues_for_dispatch()
+    |> Enum.reduce(state, fn issue, state_acc ->
+      if should_dispatch_comment_reply_issue?(issue, state_acc, terminal_states) do
+        dispatch_comment_reply_issue(state_acc, issue)
+      else
+        state_acc
+      end
+    end)
+  end
+
+  defp choose_comment_reply_issues(_issues, state), do: state
+
+  defp should_dispatch_comment_reply_issue?(
+         %Issue{id: issue_id, latest_comment_id: comment_id} = issue,
+         %State{running: running, claimed: claimed, comment_reply_seen: seen} = state,
+         terminal_states
+       )
+       when is_binary(issue_id) and is_binary(comment_id) and is_map(seen) do
+    issue_routable_to_worker?(issue) and
+      comment_reply_issue_state?(issue.state) and
+      !terminal_issue_state?(issue.state, terminal_states) and
+      Map.get(seen, issue_id) != comment_id and
+      !MapSet.member?(claimed, issue_id) and
+      !Map.has_key?(running, issue_id) and
+      available_slots(state) > 0 and
+      state_slots_available?(issue, running) and
+      worker_slots_available?(state)
+  end
+
+  defp should_dispatch_comment_reply_issue?(_issue, _state, _terminal_states), do: false
+
+  defp comment_reply_issue_state?(state_name) when is_binary(state_name) do
+    MapSet.member?(comment_reply_state_set(), normalize_issue_state(state_name))
+  end
+
+  defp comment_reply_issue_state?(_state_name), do: false
+
+  defp dispatch_comment_reply_issue(%State{} = state, %Issue{} = issue) do
+    Logger.info("Dispatching comment reply agent: #{issue_context(issue)} state=#{issue.state} latest_comment_id=#{issue.latest_comment_id}")
+
+    state
+    |> mark_comment_reply_seen(issue)
+    |> do_dispatch_issue(issue, nil, nil,
+      comment_reply: true,
+      comment_reply_marker: @comment_reply_marker
+    )
+  end
+
+  defp mark_comment_reply_seen(
+         %State{comment_reply_seen: seen} = state,
+         %Issue{id: issue_id, latest_comment_id: comment_id}
+       )
+       when is_map(seen) and is_binary(issue_id) and is_binary(comment_id) do
+    %{state | comment_reply_seen: Map.put(seen, issue_id, comment_id)}
+  end
+
+  defp mark_comment_reply_seen(state, _issue), do: state
+
   defp sort_issues_for_dispatch(issues) when is_list(issues) do
     Enum.sort_by(issues, fn
       %Issue{} = issue ->
@@ -897,6 +1005,13 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
+  defp comment_reply_state_set do
+    Config.settings!().tracker.comment_reply_states
+    |> Enum.map(&normalize_issue_state/1)
+    |> Enum.filter(&(&1 != ""))
+    |> MapSet.new()
+  end
+
   defp dispatch_issue(
          %State{} = state,
          issue,
@@ -923,7 +1038,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, runner_opts \\ []) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -932,13 +1047,13 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, runner_opts)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, runner_opts) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           AgentRunner.run(issue, recipient, Keyword.merge(runner_opts, attempt: attempt, worker_host: worker_host))
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)

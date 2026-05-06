@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Linear.Client do
 
   @issue_page_size 50
   @max_error_body_log_bytes 1_000
+  @comment_reply_marker "<!-- symphony-comment-reply -->"
 
   @query """
   query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
@@ -29,6 +30,18 @@ defmodule SymphonyElixir.Linear.Client do
         labels {
           nodes {
             name
+          }
+        }
+        comments(first: 10) {
+          nodes {
+            id
+            body
+            createdAt
+            user {
+              id
+              name
+              displayName
+            }
           }
         }
         inverseRelations(first: $relationFirst) {
@@ -74,6 +87,18 @@ defmodule SymphonyElixir.Linear.Client do
         labels {
           nodes {
             name
+          }
+        }
+        comments(first: 10) {
+          nodes {
+            id
+            body
+            createdAt
+            user {
+              id
+              name
+              displayName
+            }
           }
         }
         inverseRelations(first: $relationFirst) {
@@ -447,6 +472,7 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp normalize_issue(issue, assignee_filter) when is_map(issue) do
     assignee = issue["assignee"]
+    latest_comment = latest_actionable_comment(issue)
 
     %Issue{
       id: issue["id"],
@@ -458,6 +484,11 @@ defmodule SymphonyElixir.Linear.Client do
       branch_name: issue["branchName"],
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),
+      latest_comment_id: comment_field(latest_comment, "id"),
+      latest_comment_body: comment_field(latest_comment, "body"),
+      latest_comment_created_at: parse_datetime(comment_field(latest_comment, "createdAt")),
+      latest_comment_user_id: comment_user_field(latest_comment, "id"),
+      latest_comment_user_name: comment_user_name(latest_comment),
       blocked_by: extract_blockers(issue),
       labels: extract_labels(issue),
       assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),
@@ -470,6 +501,50 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp assignee_field(%{} = assignee, field) when is_binary(field), do: assignee[field]
   defp assignee_field(_assignee, _field), do: nil
+
+  defp latest_actionable_comment(%{"comments" => %{"nodes" => comments}}) when is_list(comments) do
+    comments
+    |> Enum.filter(&actionable_comment?/1)
+    |> Enum.max_by(&comment_sort_key/1, fn -> nil end)
+  end
+
+  defp latest_actionable_comment(_issue), do: nil
+
+  defp actionable_comment?(%{"body" => body}) when is_binary(body) do
+    body = String.trim(body)
+
+    body != "" and not ignored_comment_body?(body)
+  end
+
+  defp actionable_comment?(_comment), do: false
+
+  defp ignored_comment_body?(body) when is_binary(body) do
+    String.contains?(body, @comment_reply_marker) or
+      String.starts_with?(body, "## Codex Workpad") or
+      String.starts_with?(body, "Moved to ") or
+      String.starts_with?(body, "Moved back to ")
+  end
+
+  defp comment_sort_key(%{"createdAt" => created_at}) do
+    case parse_datetime(created_at) do
+      %DateTime{} = datetime -> DateTime.to_unix(datetime, :microsecond)
+      _ -> 0
+    end
+  end
+
+  defp comment_sort_key(_comment), do: 0
+
+  defp comment_field(%{} = comment, field) when is_binary(field), do: comment[field]
+  defp comment_field(_comment, _field), do: nil
+
+  defp comment_user_field(%{"user" => %{} = user}, field) when is_binary(field), do: user[field]
+  defp comment_user_field(_comment, _field), do: nil
+
+  defp comment_user_name(%{"user" => %{} = user}) do
+    user["displayName"] || user["name"]
+  end
+
+  defp comment_user_name(_comment), do: nil
 
   defp assigned_to_worker?(_assignee, nil), do: true
 
