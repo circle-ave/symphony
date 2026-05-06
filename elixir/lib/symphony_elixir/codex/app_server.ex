@@ -565,7 +565,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     send_message(port, %{
       "id" => id,
-      "result" => result
+      "result" => dynamic_tool_wire_result(result)
     })
 
     event =
@@ -709,6 +709,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp dynamic_tool_output(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text), do: text
   defp dynamic_tool_output(result), do: Jason.encode!(result, pretty: true)
+
+  defp dynamic_tool_wire_result(%{"output" => output}) when is_binary(output), do: output
+  defp dynamic_tool_wire_result(result), do: dynamic_tool_output(result)
 
   defp dynamic_tool_content_items(output) when is_binary(output) do
     [
