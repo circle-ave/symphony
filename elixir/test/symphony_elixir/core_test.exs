@@ -514,6 +514,41 @@ defmodule SymphonyElixir.CoreTest do
     refute Process.alive?(agent_pid)
   end
 
+  test "stale retry dispatch releases claim when issue refresh skips" do
+    issue_id = "issue-stale-dispatch"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Done"]
+    )
+
+    state = %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-562",
+      title: "Refresh moved out of active state",
+      state: "In Progress",
+      description: "Dispatch should not leave the issue claimed.",
+      labels: []
+    }
+
+    issue_fetcher = fn [^issue_id] ->
+      {:ok, [%Issue{issue | state: "In Review"}]}
+    end
+
+    updated_state = Orchestrator.dispatch_issue_for_test(state, issue, issue_fetcher)
+
+    refute MapSet.member?(updated_state.claimed, issue_id)
+    assert updated_state.running == %{}
+    assert updated_state.retry_attempts == %{}
+  end
+
   test "normal worker exit schedules active-state continuation retry" do
     issue_id = "issue-resume"
     ref = make_ref()
