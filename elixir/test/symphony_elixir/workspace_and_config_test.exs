@@ -441,6 +441,47 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
   end
 
+  test "linear client normalizes latest actionable comment" do
+    issue =
+      Client.normalize_issue_for_test(%{
+        "id" => "issue-comment",
+        "identifier" => "MT-556",
+        "title" => "Comment test",
+        "description" => "Description",
+        "state" => %{"name" => "In Review"},
+        "labels" => %{"nodes" => []},
+        "inverseRelations" => %{"nodes" => []},
+        "comments" => %{
+          "nodes" => [
+            %{
+              "id" => "comment-workpad",
+              "body" => "## Codex Workpad\n\nProgress",
+              "createdAt" => "2026-05-06T12:00:00Z",
+              "user" => %{"id" => "user-1", "displayName" => "dillon"}
+            },
+            %{
+              "id" => "comment-reply",
+              "body" => "Handled.\n\n<!-- symphony-comment-reply -->",
+              "createdAt" => "2026-05-06T12:01:00Z",
+              "user" => %{"id" => "user-1", "displayName" => "dillon"}
+            },
+            %{
+              "id" => "comment-human",
+              "body" => "Can you check this before merge?",
+              "createdAt" => "2026-05-06T11:59:00Z",
+              "user" => %{"id" => "user-2", "displayName" => "reviewer"}
+            }
+          ]
+        }
+      })
+
+    assert issue.latest_comment_id == "comment-human"
+    assert issue.latest_comment_body == "Can you check this before merge?"
+    assert issue.latest_comment_user_id == "user-2"
+    assert issue.latest_comment_user_name == "reviewer"
+    assert issue.latest_comment_created_at == ~U[2026-05-06 11:59:00Z]
+  end
+
   test "linear client logs response bodies for non-200 graphql responses" do
     log =
       ExUnit.CaptureLog.capture_log(fn ->
