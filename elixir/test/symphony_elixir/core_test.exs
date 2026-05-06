@@ -471,6 +471,65 @@ defmodule SymphonyElixir.CoreTest do
     assert updated_entry.issue.state == "In Progress"
   end
 
+  test "reconcile keeps running comment reply agent in comment reply state" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_comment_reply_states: ["In Review"],
+      tracker_terminal_states: ["Done"]
+    )
+
+    issue_id = "issue-comment-reconcile"
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(agent_pid), do: Process.exit(agent_pid, :shutdown)
+    end)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: "MT-565",
+          comment_reply: true,
+          issue: %Issue{
+            id: issue_id,
+            identifier: "MT-565",
+            state: "In Review",
+            latest_comment_id: "comment-1"
+          },
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-565",
+      state: "In Review",
+      title: "Review comment",
+      latest_comment_id: "comment-1",
+      labels: []
+    }
+
+    updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+    updated_entry = updated_state.running[issue_id]
+
+    assert Map.has_key?(updated_state.running, issue_id)
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    assert Process.alive?(agent_pid)
+    assert updated_entry.issue.state == "In Review"
+  end
+
   test "reconcile stops running issue when it is reassigned away from this worker" do
     issue_id = "issue-reassigned"
 
@@ -710,6 +769,92 @@ defmodule SymphonyElixir.CoreTest do
 
     refute Orchestrator.should_dispatch_comment_reply_issue_for_test(old_issue, state)
     assert Orchestrator.should_dispatch_comment_reply_issue_for_test(new_issue, state)
+  end
+
+  test "comment reply completion records latest comment as seen" do
+    issue_id = "issue-comment-complete"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :CommentReplyCompleteOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-566",
+      comment_reply: true,
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-566",
+        state: "In Review",
+        latest_comment_id: "comment-1"
+      },
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:comment_reply_seen, %{})
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    assert state.comment_reply_seen[issue_id] == "comment-1"
+  end
+
+  test "failed comment reply leaves latest comment unseen for retry" do
+    issue_id = "issue-comment-failed"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :CommentReplyFailedOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-567",
+      comment_reply: true,
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-567",
+        state: "In Review",
+        latest_comment_id: "comment-1"
+      },
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:comment_reply_seen, %{})
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :boom})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.comment_reply_seen, issue_id)
   end
 
   test "normal worker exit schedules active-state continuation retry" do
