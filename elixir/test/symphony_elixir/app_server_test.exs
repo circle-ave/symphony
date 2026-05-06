@@ -893,7 +893,8 @@ defmodule SymphonyElixir.AppServerTest do
                      %{
                        "contentItems" => [
                          %{"type" => "inputText", "text" => tool_output}
-                       ]
+                       ],
+                       "success" => false
                      }
                      when is_binary(tool_output),
                      payload["result"]
@@ -1026,7 +1027,8 @@ defmodule SymphonyElixir.AppServerTest do
                          "type" => "inputText",
                          "text" => ~s({"data":{"viewer":{"id":"usr_123"}}})
                        }
-                     ]
+                     ],
+                     "success" => true
                    }
                else
                  false
