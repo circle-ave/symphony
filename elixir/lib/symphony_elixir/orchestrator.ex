@@ -206,6 +206,7 @@ defmodule SymphonyElixir.Orchestrator do
       Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
 
       state
+      |> maybe_mark_comment_reply_seen(running_entry)
       |> complete_issue(issue_id)
       |> schedule_issue_retry(issue_id, 1, %{
         identifier: running_entry.identifier,
@@ -424,6 +425,9 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
         terminate_running_issue(state, issue.id, false)
+
+      running_comment_reply_issue?(state, issue.id) and comment_reply_issue_state?(issue.state) ->
+        refresh_running_issue_state(state, issue)
 
       active_issue_state?(issue.state, active_states) ->
         refresh_running_issue_state(state, issue)
@@ -861,7 +865,6 @@ defmodule SymphonyElixir.Orchestrator do
     Logger.info("Dispatching comment reply agent: #{issue_context(issue)} state=#{issue.state} latest_comment_id=#{issue.latest_comment_id}")
 
     state
-    |> mark_comment_reply_seen(issue)
     |> do_dispatch_issue(issue, nil, nil,
       comment_reply: true,
       comment_reply_marker: @comment_reply_marker
@@ -877,6 +880,18 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp mark_comment_reply_seen(state, _issue), do: state
+
+  defp maybe_mark_comment_reply_seen(%State{} = state, %{comment_reply: true, issue: %Issue{} = issue}) do
+    mark_comment_reply_seen(state, issue)
+  end
+
+  defp maybe_mark_comment_reply_seen(%State{} = state, _running_entry), do: state
+
+  defp running_comment_reply_issue?(%State{running: running}, issue_id) when is_binary(issue_id) do
+    match?(%{comment_reply: true}, Map.get(running, issue_id))
+  end
+
+  defp running_comment_reply_issue?(_state, _issue_id), do: false
 
   defp sort_issues_for_dispatch(issues) when is_list(issues) do
     Enum.sort_by(issues, fn
@@ -1073,6 +1088,7 @@ defmodule SymphonyElixir.Orchestrator do
             last_codex_timestamp: nil,
             last_codex_event: nil,
             codex_app_server_pid: nil,
+            comment_reply: Keyword.get(runner_opts, :comment_reply, false),
             codex_input_tokens: 0,
             codex_output_tokens: 0,
             codex_total_tokens: 0,
