@@ -49,7 +49,8 @@ defmodule SymphonyElixir.Orchestrator do
       retry_attempts: %{},
       codex_totals: nil,
       codex_rate_limits: nil,
-      comment_reply_seen: nil
+      comment_reply_seen: nil,
+      comment_reply_reserve_active: false
     ]
   end
 
@@ -280,7 +281,9 @@ defmodule SymphonyElixir.Orchestrator do
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          {:ok, comment_reply_issues} <- fetch_comment_reply_issues() do
       state = bootstrap_comment_reply_seen(state, comment_reply_issues)
+      state = update_comment_reply_reserve(state, comment_reply_issues)
       state = choose_comment_reply_issues(comment_reply_issues, state)
+      state = update_comment_reply_reserve(state, comment_reply_issues)
       choose_issues(issues, state)
     else
       {:error, :missing_linear_api_token} ->
@@ -915,6 +918,32 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp should_dispatch_comment_reply_issue?(_issue, _state, _terminal_states), do: false
+
+  defp update_comment_reply_reserve(%State{} = state, issues) when is_list(issues) do
+    terminal_states = terminal_state_set()
+    reserve_active? = Enum.any?(issues, &pending_comment_reply_issue?(&1, state, terminal_states))
+    %{state | comment_reply_reserve_active: reserve_active?}
+  end
+
+  defp update_comment_reply_reserve(%State{} = state, _issues), do: state
+
+  defp pending_comment_reply_issue?(
+         %Issue{id: issue_id, latest_comment_id: comment_id} = issue,
+         %State{running: running, claimed: claimed, comment_reply_seen: seen} = state,
+         terminal_states
+       )
+       when is_binary(issue_id) and is_binary(comment_id) and is_map(seen) do
+    issue_routable_to_worker?(issue) and
+      comment_reply_issue_state?(issue.state) and
+      !terminal_issue_state?(issue.state, terminal_states) and
+      Map.get(seen, issue_id) != comment_id and
+      !MapSet.member?(claimed, issue_id) and
+      !Map.has_key?(running, issue_id) and
+      state_slots_available?(issue, running) and
+      worker_slots_available?(state)
+  end
+
+  defp pending_comment_reply_issue?(_issue, _state, _terminal_states), do: false
 
   defp comment_reply_issue_state?(state_name) when is_binary(state_name) do
     MapSet.member?(comment_reply_state_set(), normalize_issue_state(state_name))
@@ -1985,7 +2014,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp reserved_comment_reply_slots(%State{} = state) do
     max_agents = state.max_concurrent_agents || Config.settings!().agent.max_concurrent_agents
 
-    if max_agents > 1 and MapSet.size(comment_reply_state_set()) > 0 do
+    if max_agents > 1 and state.comment_reply_reserve_active do
       @comment_reply_reserved_slots
     else
       0
