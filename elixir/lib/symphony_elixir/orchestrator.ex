@@ -452,6 +452,14 @@ defmodule SymphonyElixir.Orchestrator do
     resource_gate_block(running_entry)
   end
 
+  @doc false
+  @spec resource_gate_retry_should_yield_for_test?([Issue.t()], Issue.t(), State.t(), map()) ::
+          boolean()
+  def resource_gate_retry_should_yield_for_test?(issues, %Issue{} = retry_issue, %State{} = state, metadata)
+      when is_list(issues) and is_map(metadata) do
+    resource_gate_retry_should_yield?(issues, retry_issue, state, metadata, terminal_state_set())
+  end
+
   @spec cloud_gate_blocked_for_test?(map()) :: boolean()
   def cloud_gate_blocked_for_test?(running_entry) when is_map(running_entry) do
     resource_gate_block(running_entry) == :cloud_gate
@@ -1264,13 +1272,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
-    metadata = Map.delete(metadata, :delay_type)
-
     case Tracker.fetch_candidate_issues() do
       {:ok, issues} ->
         issues
         |> find_issue_by_id(issue_id)
-        |> handle_retry_issue_lookup(state, issue_id, attempt, metadata)
+        |> handle_retry_issue_lookup(state, issue_id, attempt, metadata, issues)
 
       {:error, reason} ->
         Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
@@ -1285,7 +1291,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp handle_retry_issue_lookup(%Issue{} = issue, state, issue_id, attempt, metadata) do
+  defp handle_retry_issue_lookup(%Issue{} = issue, state, issue_id, attempt, metadata, issues) do
     terminal_states = terminal_state_set()
 
     cond do
@@ -1296,7 +1302,7 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, release_issue_claim(state, issue_id)}
 
       retry_candidate_issue?(issue, terminal_states) ->
-        handle_active_retry(state, issue, attempt, metadata)
+        handle_active_retry(state, issue, attempt, metadata, issues)
 
       true ->
         Logger.debug("Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
@@ -1305,7 +1311,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, _metadata) do
+  defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, _metadata, _issues) do
     Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
     {:noreply, release_issue_claim(state, issue_id)}
   end
@@ -1345,26 +1351,78 @@ defmodule SymphonyElixir.Orchestrator do
     StatusDashboard.notify_update()
   end
 
-  defp handle_active_retry(state, issue, attempt, metadata) do
-    if retry_candidate_issue?(issue, terminal_state_set()) and
-         dispatch_slots_available?(issue, state) and
-         worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
-    else
-      Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+  defp handle_active_retry(state, issue, attempt, metadata, issues) do
+    terminal_states = terminal_state_set()
 
-      {:noreply,
-       schedule_issue_retry(
-         state,
-         issue.id,
-         attempt + 1,
-         Map.merge(metadata, %{
-           identifier: issue.identifier,
-           error: "no available orchestrator slots"
-         })
-       )}
+    cond do
+      resource_gate_retry_should_yield?(issues, issue, state, metadata, terminal_states) ->
+        Logger.info("Resource-gated retry yielded to other runnable work: #{issue_context(issue)} delay_type=#{metadata[:delay_type]}")
+
+        state =
+          state
+          |> schedule_issue_retry(
+            issue.id,
+            attempt + 1,
+            Map.merge(metadata, %{
+              identifier: issue.identifier,
+              error: resource_gate_retry_yield_error(metadata[:delay_type])
+            })
+          )
+          |> choose_issues(issues)
+
+        {:noreply, state}
+
+      retry_candidate_issue?(issue, terminal_states) and
+        dispatch_slots_available?(issue, state) and
+          worker_slots_available?(state, metadata[:worker_host]) ->
+        {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
+
+      true ->
+        Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue.id,
+           attempt + 1,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "no available orchestrator slots"
+           })
+         )}
     end
   end
+
+  defp resource_gate_retry_should_yield?(issues, %Issue{} = retry_issue, %State{} = state, metadata, terminal_states)
+       when is_list(issues) and is_map(metadata) do
+    resource_gate_delay_type?(metadata[:delay_type]) and
+      dispatchable_alternative_issue?(issues, retry_issue.id, state, terminal_states)
+  end
+
+  defp resource_gate_retry_should_yield?(_issues, _retry_issue, _state, _metadata, _terminal_states),
+    do: false
+
+  defp dispatchable_alternative_issue?(issues, retry_issue_id, %State{} = state, terminal_states) do
+    active_states = active_state_set()
+
+    issues
+    |> sort_issues_for_dispatch()
+    |> Enum.any?(fn
+      %Issue{id: issue_id} = issue when issue_id != retry_issue_id ->
+        should_dispatch_issue?(issue, state, active_states, terminal_states)
+
+      _ ->
+        false
+    end)
+  end
+
+  defp resource_gate_delay_type?(delay_type), do: delay_type in [:cloud_gate, "cloud_gate", :local_bench_gate, "local_bench_gate"]
+
+  defp resource_gate_retry_yield_error(:cloud_gate), do: "cloud gate yielded to runnable work"
+  defp resource_gate_retry_yield_error("cloud_gate"), do: "cloud gate yielded to runnable work"
+  defp resource_gate_retry_yield_error(:local_bench_gate), do: "local bench gate yielded to runnable work"
+  defp resource_gate_retry_yield_error("local_bench_gate"), do: "local bench gate yielded to runnable work"
+  defp resource_gate_retry_yield_error(_delay_type), do: "resource gate yielded to runnable work"
 
   defp release_issue_claim(%State{} = state, issue_id) do
     %{
