@@ -12,7 +12,10 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
-  @cloud_gate_blocked_marker Path.join([".symphony", "cloud-gate-blocked"])
+  @resource_gate_markers %{
+    cloud_gate: Path.join([".symphony", "cloud-gate-blocked"]),
+    local_bench_gate: Path.join([".symphony", "local-bench-gate-blocked"])
+  }
   @comment_reply_reserved_slots 1
   @comment_reply_marker "<!-- symphony-comment-reply -->"
   # Slightly above the dashboard render interval so "checking now…" can render.
@@ -202,32 +205,33 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
-    cond do
-      cloud_gate_blocked?(running_entry) ->
-        Logger.info("Agent task paused for issue_id=#{issue_id} session_id=#{session_id}; cloud gate is busy")
+    case resource_gate_block(running_entry) do
+      nil ->
+        if input_required_blocker?(running_entry) do
+          block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
+        else
+          Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+
+          state
+          |> maybe_mark_comment_reply_seen(running_entry)
+          |> complete_issue(issue_id)
+          |> schedule_issue_retry(issue_id, 1, %{
+            identifier: running_entry.identifier,
+            issue_url: running_entry.issue.url,
+            delay_type: :continuation,
+            worker_host: Map.get(running_entry, :worker_host),
+            workspace_path: Map.get(running_entry, :workspace_path)
+          })
+        end
+
+      gate ->
+        Logger.info("Agent task parked for issue_id=#{issue_id} session_id=#{session_id}; #{gate} is busy")
 
         schedule_issue_retry(state, issue_id, 1, %{
           identifier: running_entry.identifier,
           issue_url: running_entry.issue.url,
-          delay_type: :cloud_gate,
-          error: "cloud gate busy",
-          worker_host: Map.get(running_entry, :worker_host),
-          workspace_path: Map.get(running_entry, :workspace_path)
-        })
-
-      input_required_blocker?(running_entry) ->
-        block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
-
-      true ->
-        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
-
-        state
-        |> maybe_mark_comment_reply_seen(running_entry)
-        |> complete_issue(issue_id)
-        |> schedule_issue_retry(issue_id, 1, %{
-          identifier: running_entry.identifier,
-          issue_url: running_entry.issue.url,
-          delay_type: :continuation,
+          delay_type: gate,
+          error: resource_gate_error(gate),
           worker_host: Map.get(running_entry, :worker_host),
           workspace_path: Map.get(running_entry, :workspace_path)
         })
@@ -443,9 +447,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec resource_gate_block_for_test(map()) :: atom() | nil
+  def resource_gate_block_for_test(running_entry) when is_map(running_entry) do
+    resource_gate_block(running_entry)
+  end
+
   @spec cloud_gate_blocked_for_test?(map()) :: boolean()
   def cloud_gate_blocked_for_test?(running_entry) when is_map(running_entry) do
-    cloud_gate_blocked?(running_entry)
+    resource_gate_block(running_entry) == :cloud_gate
   end
 
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
@@ -1372,6 +1381,8 @@ defmodule SymphonyElixir.Orchestrator do
       {"continuation", 1} -> @continuation_retry_delay_ms
       {:cloud_gate, _attempt} -> Config.settings!().agent.cloud_gate_retry_cooldown_ms
       {"cloud_gate", _attempt} -> Config.settings!().agent.cloud_gate_retry_cooldown_ms
+      {:local_bench_gate, _attempt} -> Config.settings!().agent.local_bench_gate_retry_cooldown_ms
+      {"local_bench_gate", _attempt} -> Config.settings!().agent.local_bench_gate_retry_cooldown_ms
       _ -> failure_retry_delay(attempt)
     end
   end
@@ -1415,15 +1426,21 @@ defmodule SymphonyElixir.Orchestrator do
     metadata[:delay_type] || Map.get(previous_retry, :delay_type)
   end
 
-  defp cloud_gate_blocked?(running_entry) when is_map(running_entry) do
+  defp resource_gate_block(running_entry) when is_map(running_entry) do
     case Map.get(running_entry, :workspace_path) do
       workspace_path when is_binary(workspace_path) ->
-        File.exists?(Path.join(workspace_path, @cloud_gate_blocked_marker))
+        Enum.find_value(@resource_gate_markers, fn {gate, marker} ->
+          if File.exists?(Path.join(workspace_path, marker)), do: gate
+        end)
 
       _ ->
-        false
+        nil
     end
   end
+
+  defp resource_gate_error(:cloud_gate), do: "cloud gate busy"
+  defp resource_gate_error(:local_bench_gate), do: "local bench gate busy"
+  defp resource_gate_error(gate), do: "#{gate} busy"
 
   defp maybe_put_runtime_value(running_entry, _key, nil), do: running_entry
 
@@ -1612,6 +1629,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry, :identifier),
           issue_url: Map.get(retry, :issue_url),
           error: Map.get(retry, :error),
+          delay_type: Map.get(retry, :delay_type),
           worker_host: Map.get(retry, :worker_host),
           workspace_path: Map.get(retry, :workspace_path)
         }
