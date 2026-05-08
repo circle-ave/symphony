@@ -987,6 +987,110 @@ defmodule SymphonyElixir.CoreTest do
            )
   end
 
+  test "released cloud gate retries wake early" do
+    workspace = Path.join(System.tmp_dir!(), "symphony-cloud-gate-release-#{System.unique_integer([:positive])}")
+    lock_dir = Path.join(System.tmp_dir!(), "symphony-cloud-gate-lock-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+    File.mkdir_p!(lock_dir)
+    File.write!(Path.join([workspace, ".symphony", "cloud-gate-blocked"]), "lock=#{lock_dir}\n")
+
+    on_exit(fn ->
+      File.rm_rf(workspace)
+      File.rm_rf(lock_dir)
+    end)
+
+    stale_timer_ref = Process.send_after(self(), :stale_cloud_retry, 60_000)
+    stale_retry_token = make_ref()
+
+    state = %Orchestrator.State{
+      retry_attempts: %{
+        "issue-cloud-gate" => %{
+          attempt: 1,
+          timer_ref: stale_timer_ref,
+          retry_token: stale_retry_token,
+          due_at_ms: System.monotonic_time(:millisecond) + 60_000,
+          identifier: "MT-577",
+          delay_type: :cloud_gate,
+          workspace_path: workspace
+        }
+      }
+    }
+
+    state_with_lock = Orchestrator.wake_released_resource_gate_retries_for_test(state)
+    assert state_with_lock.retry_attempts["issue-cloud-gate"].timer_ref == stale_timer_ref
+
+    File.rm_rf!(lock_dir)
+
+    state = Orchestrator.wake_released_resource_gate_retries_for_test(state_with_lock)
+    retry = state.retry_attempts["issue-cloud-gate"]
+
+    assert retry.timer_ref != stale_timer_ref
+    assert retry.retry_token != stale_retry_token
+    assert retry.error == "resource gate released; retrying soon"
+    assert_due_in_range(retry.due_at_ms, 500, 1_500)
+
+    Process.cancel_timer(retry.timer_ref)
+  end
+
+  test "released local bench gate retries wake when a pool slot is free" do
+    workspace =
+      Path.join(System.tmp_dir!(), "symphony-local-bench-release-#{System.unique_integer([:positive])}")
+
+    bench_base =
+      Path.join(System.tmp_dir!(), "symphony-local-bench-base-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    for slot <- 1..3 do
+      File.mkdir_p!(local_bench_lock_path_for_test(bench_base, slot))
+    end
+
+    File.write!(
+      Path.join([workspace, ".symphony", "local-bench-gate-blocked"]),
+      "base=#{bench_base}\nsize=3\n"
+    )
+
+    on_exit(fn ->
+      File.rm_rf(workspace)
+      File.rm_rf("#{bench_base}.use.lock")
+      File.rm_rf("#{bench_base}-2.use.lock")
+      File.rm_rf("#{bench_base}-3.use.lock")
+    end)
+
+    stale_timer_ref = Process.send_after(self(), :stale_local_bench_retry, 60_000)
+    stale_retry_token = make_ref()
+
+    state = %Orchestrator.State{
+      retry_attempts: %{
+        "issue-local-bench-gate" => %{
+          attempt: 1,
+          timer_ref: stale_timer_ref,
+          retry_token: stale_retry_token,
+          due_at_ms: System.monotonic_time(:millisecond) + 60_000,
+          identifier: "MT-578",
+          delay_type: :local_bench_gate,
+          workspace_path: workspace
+        }
+      }
+    }
+
+    state_with_full_pool = Orchestrator.wake_released_resource_gate_retries_for_test(state)
+    assert state_with_full_pool.retry_attempts["issue-local-bench-gate"].timer_ref == stale_timer_ref
+
+    File.rm_rf!(local_bench_lock_path_for_test(bench_base, 2))
+
+    state = Orchestrator.wake_released_resource_gate_retries_for_test(state_with_full_pool)
+    retry = state.retry_attempts["issue-local-bench-gate"]
+
+    assert retry.timer_ref != stale_timer_ref
+    assert retry.retry_token != stale_retry_token
+    assert retry.error == "resource gate released; retrying soon"
+    assert_due_in_range(retry.due_at_ms, 500, 1_500)
+
+    Process.cancel_timer(retry.timer_ref)
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()
@@ -1189,6 +1293,9 @@ defmodule SymphonyElixir.CoreTest do
     assert remaining_ms >= min_remaining_ms
     assert remaining_ms <= max_remaining_ms
   end
+
+  defp local_bench_lock_path_for_test(base, 1), do: "#{base}.use.lock"
+  defp local_bench_lock_path_for_test(base, slot), do: "#{base}-#{slot}.use.lock"
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)

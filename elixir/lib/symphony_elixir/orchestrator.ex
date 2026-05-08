@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @resource_gate_released_retry_delay_ms 1_000
   @resource_gate_markers %{
     cloud_gate: Path.join([".symphony", "cloud-gate-blocked"]),
     local_bench_gate: Path.join([".symphony", "local-bench-gate-blocked"])
@@ -116,6 +117,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
+    state = wake_released_resource_gate_retries(state)
     state = maybe_dispatch(state)
     state = schedule_tick(state, state.poll_interval_ms)
     state = %{state | poll_check_in_progress: false}
@@ -426,6 +428,12 @@ defmodule SymphonyElixir.Orchestrator do
   @spec retry_delay_for_test(pos_integer(), map()) :: pos_integer()
   def retry_delay_for_test(attempt, metadata) when is_integer(attempt) and is_map(metadata) do
     retry_delay(attempt, metadata)
+  end
+
+  @doc false
+  @spec wake_released_resource_gate_retries_for_test(State.t()) :: State.t()
+  def wake_released_resource_gate_retries_for_test(%State{} = state) do
+    wake_released_resource_gate_retries(state)
   end
 
   @doc false
@@ -1402,6 +1410,138 @@ defmodule SymphonyElixir.Orchestrator do
   defp resource_gate_retry_yield_error(:local_bench_gate), do: "local bench gate yielded to runnable work"
   defp resource_gate_retry_yield_error("local_bench_gate"), do: "local bench gate yielded to runnable work"
   defp resource_gate_retry_yield_error(_delay_type), do: "resource gate yielded to runnable work"
+
+  defp wake_released_resource_gate_retries(%State{} = state) do
+    now_ms = System.monotonic_time(:millisecond)
+
+    Enum.reduce(state.retry_attempts, state, fn {issue_id, retry_entry}, state_acc ->
+      if should_wake_released_resource_gate_retry?(retry_entry, now_ms) do
+        Logger.info("Resource gate released; waking retry issue_id=#{issue_id} issue_identifier=#{Map.get(retry_entry, :identifier)} delay_type=#{Map.get(retry_entry, :delay_type)}")
+
+        rearm_retry_attempt(
+          state_acc,
+          issue_id,
+          retry_entry,
+          @resource_gate_released_retry_delay_ms,
+          "resource gate released; retrying soon"
+        )
+      else
+        state_acc
+      end
+    end)
+  end
+
+  defp should_wake_released_resource_gate_retry?(retry_entry, now_ms) when is_map(retry_entry) do
+    resource_gate_delay_type?(Map.get(retry_entry, :delay_type)) and
+      retry_due_later_than?(retry_entry, now_ms, @resource_gate_released_retry_delay_ms) and
+      resource_gate_released?(retry_entry)
+  end
+
+  defp should_wake_released_resource_gate_retry?(_retry_entry, _now_ms), do: false
+
+  defp retry_due_later_than?(retry_entry, now_ms, delay_ms) do
+    case Map.get(retry_entry, :due_at_ms) do
+      due_at_ms when is_integer(due_at_ms) -> due_at_ms - now_ms > delay_ms
+      _ -> false
+    end
+  end
+
+  defp resource_gate_released?(retry_entry) when is_map(retry_entry) do
+    delay_type = normalize_resource_gate_delay_type(Map.get(retry_entry, :delay_type))
+    workspace_path = Map.get(retry_entry, :workspace_path)
+
+    cond do
+      delay_type == nil ->
+        false
+
+      !is_binary(workspace_path) or workspace_path == "" ->
+        false
+
+      true ->
+        marker_path = Path.join(workspace_path, Map.fetch!(@resource_gate_markers, delay_type))
+
+        if File.exists?(marker_path) do
+          marker_resource_gate_released?(delay_type, marker_path)
+        else
+          true
+        end
+    end
+  end
+
+  defp marker_resource_gate_released?(:cloud_gate, marker_path) do
+    with {:ok, marker} <- File.read(marker_path),
+         lock_path when is_binary(lock_path) and lock_path != "" <- marker_value(marker, "lock") do
+      !File.exists?(lock_path)
+    else
+      _ -> false
+    end
+  end
+
+  defp marker_resource_gate_released?(:local_bench_gate, marker_path) do
+    with {:ok, marker} <- File.read(marker_path),
+         base when is_binary(base) and base != "" <- marker_value(marker, "base") do
+      size =
+        marker
+        |> marker_value("size")
+        |> parse_positive_integer(1)
+
+      1..size
+      |> Enum.any?(fn slot ->
+        not File.exists?(local_bench_lock_path(slot, base))
+      end)
+    else
+      _ -> false
+    end
+  end
+
+  defp marker_value(marker, key) when is_binary(marker) and is_binary(key) do
+    marker
+    |> String.split("\n")
+    |> Enum.find_value(fn line ->
+      case String.split(line, "=", parts: 2) do
+        [^key, value] -> String.trim(value)
+        _ -> nil
+      end
+    end)
+  end
+
+  defp parse_positive_integer(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, ""} when integer > 0 -> integer
+      _ -> default
+    end
+  end
+
+  defp parse_positive_integer(_value, default), do: default
+
+  defp local_bench_lock_path(1, base), do: "#{base}.use.lock"
+  defp local_bench_lock_path(slot, base), do: "#{base}-#{slot}.use.lock"
+
+  defp normalize_resource_gate_delay_type(:cloud_gate), do: :cloud_gate
+  defp normalize_resource_gate_delay_type("cloud_gate"), do: :cloud_gate
+  defp normalize_resource_gate_delay_type(:local_bench_gate), do: :local_bench_gate
+  defp normalize_resource_gate_delay_type("local_bench_gate"), do: :local_bench_gate
+  defp normalize_resource_gate_delay_type(_delay_type), do: nil
+
+  defp rearm_retry_attempt(%State{} = state, issue_id, retry_entry, delay_ms, error)
+       when is_binary(issue_id) and is_map(retry_entry) and is_integer(delay_ms) and delay_ms >= 0 do
+    if is_reference(Map.get(retry_entry, :timer_ref)) do
+      Process.cancel_timer(retry_entry.timer_ref)
+    end
+
+    retry_token = make_ref()
+    due_at_ms = System.monotonic_time(:millisecond) + delay_ms
+    timer_ref = Process.send_after(self(), {:retry_issue, issue_id, retry_token}, delay_ms)
+
+    updated_retry_entry =
+      retry_entry
+      |> Map.put(:timer_ref, timer_ref)
+      |> Map.put(:retry_token, retry_token)
+      |> Map.put(:due_at_ms, due_at_ms)
+      |> Map.put(:error, error)
+
+    %{state | retry_attempts: Map.put(state.retry_attempts, issue_id, updated_retry_entry)}
+  end
 
   defp release_issue_claim(%State{} = state, issue_id) do
     %{
