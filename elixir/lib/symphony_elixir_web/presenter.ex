@@ -108,6 +108,7 @@ defmodule SymphonyElixirWeb.Presenter do
       state: entry.state,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
+      resource_status: Map.get(entry, :resource_status),
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_codex_event,
@@ -132,7 +133,8 @@ defmodule SymphonyElixirWeb.Presenter do
       error: entry.error,
       delay_type: Map.get(entry, :delay_type),
       worker_host: Map.get(entry, :worker_host),
-      workspace_path: Map.get(entry, :workspace_path)
+      workspace_path: Map.get(entry, :workspace_path),
+      resource_status: Map.get(entry, :resource_status)
     }
   end
 
@@ -157,6 +159,7 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
+      resource_status: Map.get(running, :resource_status),
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
@@ -179,7 +182,8 @@ defmodule SymphonyElixirWeb.Presenter do
       error: retry.error,
       delay_type: Map.get(retry, :delay_type),
       worker_host: Map.get(retry, :worker_host),
-      workspace_path: Map.get(retry, :workspace_path)
+      workspace_path: Map.get(retry, :workspace_path),
+      resource_status: Map.get(retry, :resource_status)
     }
   end
 
