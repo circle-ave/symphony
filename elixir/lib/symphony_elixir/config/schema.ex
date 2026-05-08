@@ -48,6 +48,10 @@ defmodule SymphonyElixir.Config.Schema do
       field(:kind, :string)
       field(:endpoint, :string, default: "https://api.linear.app/graphql")
       field(:api_key, :string)
+      field(:oauth_access_token, :string)
+      field(:oauth_client_id, :string)
+      field(:oauth_client_secret, :string)
+      field(:oauth_scope, :string, default: "read,write")
       field(:project_slug, :string)
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
@@ -60,7 +64,20 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :comment_reply_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :oauth_access_token,
+          :oauth_client_id,
+          :oauth_client_secret,
+          :oauth_scope,
+          :project_slug,
+          :assignee,
+          :active_states,
+          :comment_reply_states,
+          :terminal_states
+        ],
         empty_values: []
       )
     end
@@ -132,6 +149,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_concurrent_agents, :integer, default: 10)
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
+      field(:cloud_gate_retry_cooldown_ms, :integer, default: 1_800_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
     end
 
@@ -140,12 +158,19 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+        [
+          :max_concurrent_agents,
+          :max_turns,
+          :max_retry_backoff_ms,
+          :cloud_gate_retry_cooldown_ms,
+          :max_concurrent_agents_by_state
+        ],
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
+      |> validate_number(:cloud_gate_retry_cooldown_ms, greater_than: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
     end
@@ -370,6 +395,10 @@ defmodule SymphonyElixir.Config.Schema do
     tracker = %{
       settings.tracker
       | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
+        oauth_access_token: resolve_secret_setting(settings.tracker.oauth_access_token, System.get_env("LINEAR_OAUTH_ACCESS_TOKEN")),
+        oauth_client_id: resolve_secret_setting(settings.tracker.oauth_client_id, System.get_env("LINEAR_OAUTH_CLIENT_ID")),
+        oauth_client_secret: resolve_secret_setting(settings.tracker.oauth_client_secret, System.get_env("LINEAR_OAUTH_CLIENT_SECRET")),
+        oauth_scope: resolve_secret_setting(settings.tracker.oauth_scope, System.get_env("LINEAR_OAUTH_SCOPE") || "read,write"),
         assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
     }
 
