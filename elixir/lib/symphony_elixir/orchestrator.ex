@@ -13,6 +13,8 @@ defmodule SymphonyElixir.Orchestrator do
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
   @resource_gate_released_retry_delay_ms 1_000
+  @resource_gate_slot_retry_delay_ms 1_000
+  @resource_lock_orphan_grace_ms 10_000
   @resource_gate_markers %{
     cloud_gate: Path.join([".symphony", "cloud-gate-blocked"]),
     local_bench_gate: Path.join([".symphony", "local-bench-gate-blocked"])
@@ -117,6 +119,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
+    state = cleanup_orphaned_resource_locks(state)
     state = wake_released_resource_gate_retries(state)
     state = maybe_dispatch(state)
     state = schedule_tick(state, state.poll_interval_ms)
@@ -434,6 +437,12 @@ defmodule SymphonyElixir.Orchestrator do
   @spec wake_released_resource_gate_retries_for_test(State.t()) :: State.t()
   def wake_released_resource_gate_retries_for_test(%State{} = state) do
     wake_released_resource_gate_retries(state)
+  end
+
+  @doc false
+  @spec cleanup_orphaned_resource_locks_for_test(State.t(), [String.t()]) :: State.t()
+  def cleanup_orphaned_resource_locks_for_test(%State{} = state, lock_paths) when is_list(lock_paths) do
+    cleanup_orphaned_resource_locks(state, lock_paths)
   end
 
   @doc false
@@ -1367,15 +1376,20 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
+        metadata =
+          metadata
+          |> Map.merge(%{
+            identifier: issue.identifier,
+            error: "no available orchestrator slots"
+          })
+          |> maybe_use_resource_gate_slot_retry_delay()
+
         {:noreply,
          schedule_issue_retry(
            state,
            issue.id,
            attempt + 1,
-           Map.merge(metadata, %{
-             identifier: issue.identifier,
-             error: "no available orchestrator slots"
-           })
+           metadata
          )}
     end
   end
@@ -1410,6 +1424,14 @@ defmodule SymphonyElixir.Orchestrator do
   defp resource_gate_retry_yield_error(:local_bench_gate), do: "local bench gate yielded to runnable work"
   defp resource_gate_retry_yield_error("local_bench_gate"), do: "local bench gate yielded to runnable work"
   defp resource_gate_retry_yield_error(_delay_type), do: "resource gate yielded to runnable work"
+
+  defp maybe_use_resource_gate_slot_retry_delay(metadata) when is_map(metadata) do
+    if resource_gate_delay_type?(Map.get(metadata, :delay_type)) do
+      Map.put(metadata, :retry_delay_ms, @resource_gate_slot_retry_delay_ms)
+    else
+      metadata
+    end
+  end
 
   defp wake_released_resource_gate_retries(%State{} = state) do
     now_ms = System.monotonic_time(:millisecond)
@@ -1494,6 +1516,239 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp cleanup_orphaned_resource_locks(%State{} = state, lock_paths \\ nil) do
+    active_identifiers = active_resource_lock_identifiers(state)
+
+    (lock_paths || resource_lock_paths_for_cleanup(state))
+    |> Enum.uniq()
+    |> Enum.each(&cleanup_orphaned_resource_lock(&1, active_identifiers))
+
+    state
+  end
+
+  defp active_resource_lock_identifiers(%State{} = state) do
+    running_identifiers =
+      state.running
+      |> Map.values()
+      |> Enum.map(&Map.get(&1, :identifier))
+
+    retry_identifiers =
+      state.retry_attempts
+      |> Map.values()
+      |> Enum.map(&Map.get(&1, :identifier))
+
+    (running_identifiers ++ retry_identifiers)
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> MapSet.new()
+  end
+
+  defp resource_lock_paths_for_cleanup(%State{} = state) do
+    retry_entries = Map.values(state.retry_attempts)
+    running_entries = Map.values(state.running)
+
+    marker_lock_paths =
+      (running_entries ++ retry_entries)
+      |> Enum.flat_map(&resource_lock_paths_from_entry/1)
+
+    [frappe_cloud_deploy_lock_path() | marker_lock_paths]
+  end
+
+  defp resource_lock_paths_from_entry(entry) when is_map(entry) do
+    workspace_path = Map.get(entry, :workspace_path)
+
+    if is_binary(workspace_path) and workspace_path != "" do
+      @resource_gate_markers
+      |> Enum.flat_map(fn {delay_type, marker_name} ->
+        marker_path = Path.join(workspace_path, marker_name)
+
+        if File.exists?(marker_path) do
+          marker_resource_lock_paths(delay_type, marker_path)
+        else
+          []
+        end
+      end)
+    else
+      []
+    end
+  end
+
+  defp resource_lock_paths_from_entry(_entry), do: []
+
+  defp marker_resource_lock_paths(:cloud_gate, marker_path) do
+    with {:ok, marker} <- File.read(marker_path),
+         lock_path when is_binary(lock_path) and lock_path != "" <- marker_value(marker, "lock") do
+      [lock_path]
+    else
+      _ -> []
+    end
+  end
+
+  defp marker_resource_lock_paths(:local_bench_gate, marker_path) do
+    with {:ok, marker} <- File.read(marker_path),
+         base when is_binary(base) and base != "" <- marker_value(marker, "base") do
+      size =
+        marker
+        |> marker_value("size")
+        |> parse_positive_integer(1)
+
+      Enum.map(1..size, &local_bench_lock_path(&1, base))
+    else
+      _ -> []
+    end
+  end
+
+  defp frappe_cloud_deploy_lock_path do
+    System.get_env("FRAPPE_CLOUD_DEPLOY_LOCK_DIR") ||
+      Path.join([System.user_home!(), ".cache", "symphony", "frappe-cloud-deploy.use.lock"])
+  end
+
+  defp cleanup_orphaned_resource_lock(lock_path, active_identifiers) when is_binary(lock_path) do
+    if File.exists?(lock_path) do
+      case read_resource_lock_owner(lock_path) do
+        {:ok, owner} ->
+          maybe_cleanup_owned_resource_lock(lock_path, owner, active_identifiers)
+
+        :missing_owner ->
+          :ok
+      end
+    end
+  end
+
+  defp cleanup_orphaned_resource_lock(_lock_path, _active_identifiers), do: :ok
+
+  defp read_resource_lock_owner(lock_path) when is_binary(lock_path) do
+    owner_path = Path.join(lock_path, "owner")
+
+    case File.read(owner_path) do
+      {:ok, owner_text} ->
+        owner =
+          owner_text
+          |> String.split("\n", trim: true)
+          |> Enum.reduce(%{}, fn line, owner ->
+            case String.split(line, "=", parts: 2) do
+              [key, value] -> Map.put(owner, String.trim(key), String.trim(value))
+              _ -> owner
+            end
+          end)
+
+        {:ok, owner}
+
+      {:error, _reason} ->
+        :missing_owner
+    end
+  end
+
+  defp maybe_cleanup_owned_resource_lock(lock_path, owner, active_identifiers) do
+    owner_pid = owner_pid(owner)
+    owner_identifier = owner_identifier(owner)
+    owner_active? = is_binary(owner_identifier) and MapSet.member?(active_identifiers, owner_identifier)
+
+    cond do
+      is_integer(owner_pid) and not os_pid_alive?(owner_pid) ->
+        remove_resource_lock(lock_path, owner, "owner pid is no longer running")
+
+      is_integer(owner_pid) and not owner_active? and resource_lock_older_than?(lock_path, @resource_lock_orphan_grace_ms) and
+          managed_resource_lock_owner_process?(owner_pid) ->
+        terminate_process_tree(owner_pid)
+        remove_resource_lock(lock_path, owner, "owner issue is no longer active")
+
+      true ->
+        :ok
+    end
+  end
+
+  defp owner_pid(owner) when is_map(owner) do
+    case Integer.parse(to_string(Map.get(owner, "pid", ""))) do
+      {pid, ""} when pid > 0 -> pid
+      _ -> nil
+    end
+  end
+
+  defp owner_identifier(owner) when is_map(owner) do
+    ["target_issue", "issue", "issue_identifier"]
+    |> Enum.find_value(fn key ->
+      case Map.get(owner, key) do
+        value when is_binary(value) and value != "" -> value
+        _ -> nil
+      end
+    end)
+  end
+
+  defp os_pid_alive?(pid) when is_integer(pid) do
+    case System.cmd("kill", ["-0", Integer.to_string(pid)], stderr_to_stdout: true) do
+      {_output, 0} -> true
+      _ -> false
+    end
+  end
+
+  defp managed_resource_lock_owner_process?(pid) when is_integer(pid) do
+    case os_process_command(pid) do
+      {:ok, command} ->
+        String.contains?(command, [
+          "with_frappe_cloud_deploy_lock.sh",
+          "with_frappe_cloud_review_target.sh",
+          "with_shared_local_frappe_bench.sh"
+        ])
+
+      :error ->
+        false
+    end
+  end
+
+  defp os_process_command(pid) when is_integer(pid) do
+    case System.cmd("ps", ["-p", Integer.to_string(pid), "-o", "command="], stderr_to_stdout: true) do
+      {output, 0} -> {:ok, String.trim(output)}
+      _ -> :error
+    end
+  end
+
+  defp terminate_process_tree(pid) when is_integer(pid) do
+    pid
+    |> child_pids()
+    |> Enum.each(&terminate_process_tree/1)
+
+    current_pid =
+      System.pid()
+      |> to_string()
+
+    unless Integer.to_string(pid) == current_pid do
+      System.cmd("kill", ["-TERM", Integer.to_string(pid)], stderr_to_stdout: true)
+    end
+  end
+
+  defp child_pids(pid) when is_integer(pid) do
+    case System.cmd("pgrep", ["-P", Integer.to_string(pid)], stderr_to_stdout: true) do
+      {output, 0} ->
+        output
+        |> String.split()
+        |> Enum.flat_map(fn value ->
+          case Integer.parse(value) do
+            {child_pid, ""} -> [child_pid]
+            _ -> []
+          end
+        end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp remove_resource_lock(lock_path, owner, reason) do
+    Logger.warning("Removing orphaned resource lock path=#{lock_path} reason=#{reason} owner=#{inspect(owner)}")
+    File.rm_rf(lock_path)
+    :ok
+  end
+
+  defp resource_lock_older_than?(lock_path, grace_ms) when is_binary(lock_path) and is_integer(grace_ms) do
+    case File.stat(lock_path, time: :posix) do
+      {:ok, %{mtime: mtime}} when is_integer(mtime) ->
+        (System.system_time(:second) - mtime) * 1_000 >= grace_ms
+
+      _ ->
+        false
+    end
+  end
+
   defp marker_value(marker, key) when is_binary(marker) and is_binary(key) do
     marker
     |> String.split("\n")
@@ -1553,14 +1808,20 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
-    case {metadata[:delay_type], attempt} do
-      {:continuation, 1} -> @continuation_retry_delay_ms
-      {"continuation", 1} -> @continuation_retry_delay_ms
-      {:cloud_gate, _attempt} -> Config.settings!().agent.cloud_gate_retry_cooldown_ms
-      {"cloud_gate", _attempt} -> Config.settings!().agent.cloud_gate_retry_cooldown_ms
-      {:local_bench_gate, _attempt} -> Config.settings!().agent.local_bench_gate_retry_cooldown_ms
-      {"local_bench_gate", _attempt} -> Config.settings!().agent.local_bench_gate_retry_cooldown_ms
-      _ -> failure_retry_delay(attempt)
+    case Map.get(metadata, :retry_delay_ms) do
+      delay_ms when is_integer(delay_ms) and delay_ms >= 0 ->
+        delay_ms
+
+      _ ->
+        case {metadata[:delay_type], attempt} do
+          {:continuation, 1} -> @continuation_retry_delay_ms
+          {"continuation", 1} -> @continuation_retry_delay_ms
+          {:cloud_gate, _attempt} -> Config.settings!().agent.cloud_gate_retry_cooldown_ms
+          {"cloud_gate", _attempt} -> Config.settings!().agent.cloud_gate_retry_cooldown_ms
+          {:local_bench_gate, _attempt} -> Config.settings!().agent.local_bench_gate_retry_cooldown_ms
+          {"local_bench_gate", _attempt} -> Config.settings!().agent.local_bench_gate_retry_cooldown_ms
+          _ -> failure_retry_delay(attempt)
+        end
     end
   end
 

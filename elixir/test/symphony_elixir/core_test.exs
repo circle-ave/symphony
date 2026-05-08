@@ -943,6 +943,17 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.retry_delay_for_test(1, %{delay_type: :continuation}) == 1_000
   end
 
+  test "resource-gated slot waits use immediate retry delay" do
+    write_workflow_file!(Workflow.workflow_file_path(), cloud_gate_retry_cooldown_ms: 60_000)
+
+    assert Orchestrator.retry_delay_for_test(3, %{
+             delay_type: :cloud_gate,
+             retry_delay_ms: 1_000
+           }) == 1_000
+
+    assert Orchestrator.retry_delay_for_test(3, %{delay_type: :cloud_gate}) == 60_000
+  end
+
   test "resource-gated retries yield slots to other runnable issues" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: ["Rework"],
@@ -1089,6 +1100,46 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(retry.due_at_ms, 500, 1_500)
 
     Process.cancel_timer(retry.timer_ref)
+  end
+
+  test "resource lock cleanup removes dead owner locks" do
+    lock_dir = Path.join(System.tmp_dir!(), "symphony-dead-owner-lock-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(lock_dir)
+
+    {dead_pid, 0} = System.cmd("sh", ["-c", "echo $$"])
+
+    File.write!(
+      Path.join(lock_dir, "owner"),
+      "pid=#{String.trim(dead_pid)}\ntarget_issue=MT-579\nstarted_at=2026-05-08T00:00:00Z\n"
+    )
+
+    on_exit(fn -> File.rm_rf(lock_dir) end)
+
+    state = %Orchestrator.State{running: %{}, retry_attempts: %{}}
+    Orchestrator.cleanup_orphaned_resource_locks_for_test(state, [lock_dir])
+
+    refute File.exists?(lock_dir)
+  end
+
+  test "resource lock cleanup preserves active owner locks" do
+    lock_dir = Path.join(System.tmp_dir!(), "symphony-active-owner-lock-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(lock_dir)
+
+    File.write!(
+      Path.join(lock_dir, "owner"),
+      "pid=#{System.pid()}\ntarget_issue=MT-580\nstarted_at=2026-05-08T00:00:00Z\n"
+    )
+
+    on_exit(fn -> File.rm_rf(lock_dir) end)
+
+    state = %Orchestrator.State{
+      running: %{"issue-active-owner" => %{identifier: "MT-580"}},
+      retry_attempts: %{}
+    }
+
+    Orchestrator.cleanup_orphaned_resource_locks_for_test(state, [lock_dir])
+
+    assert File.exists?(lock_dir)
   end
 
   test "abnormal worker exit increments retry attempt progressively" do
