@@ -928,6 +928,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "worker.max_concurrent_agents_per_host"
 
+    write_workflow_file!(Workflow.workflow_file_path(), cloud_gate_retry_cooldown_ms: 0)
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.cloud_gate_retry_cooldown_ms"
+
     write_workflow_file!(Workflow.workflow_file_path(), codex_turn_timeout_ms: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "codex.turn_timeout_ms"
@@ -946,6 +950,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       poll_interval_ms: %{bad: true},
       workspace_root: 123,
       max_retry_backoff_ms: 0,
+      cloud_gate_retry_cooldown_ms: 0,
       max_concurrent_agents_by_state: %{"Todo" => "1", "Review" => 0, "Done" => "bad"},
       hook_timeout_ms: 0,
       observability_enabled: "maybe",
