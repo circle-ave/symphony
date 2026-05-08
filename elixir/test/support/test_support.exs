@@ -108,6 +108,7 @@ defmodule SymphonyElixir.TestSupport do
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           cloud_gate_retry_cooldown_ms: 1_800_000,
+          local_bench_gate_retry_cooldown_ms: 60_000,
           max_concurrent_agents_by_state: %{},
           codex_command: "codex app-server",
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
@@ -147,6 +148,7 @@ defmodule SymphonyElixir.TestSupport do
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     cloud_gate_retry_cooldown_ms = Keyword.get(config, :cloud_gate_retry_cooldown_ms)
+    local_bench_gate_retry_cooldown_ms = Keyword.get(config, :local_bench_gate_retry_cooldown_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     codex_command = Keyword.get(config, :codex_command)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
@@ -189,6 +191,7 @@ defmodule SymphonyElixir.TestSupport do
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  cloud_gate_retry_cooldown_ms: #{yaml_value(cloud_gate_retry_cooldown_ms)}",
+        "  local_bench_gate_retry_cooldown_ms: #{yaml_value(local_bench_gate_retry_cooldown_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",

@@ -879,11 +879,67 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 59_000, 60_500)
   end
 
-  test "cloud gate retry delay uses configured cooldown" do
-    write_workflow_file!(Workflow.workflow_file_path(), cloud_gate_retry_cooldown_ms: 12_345)
+  test "normal worker exit with local bench gate marker schedules cooldown retry" do
+    issue_id = "issue-local-bench-gate"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :LocalBenchGateRetryOrchestrator)
+
+    write_workflow_file!(Workflow.workflow_file_path(), local_bench_gate_retry_cooldown_ms: 25_000)
+
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    workspace =
+      Path.join(System.tmp_dir!(), "symphony-local-bench-gate-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+    File.write!(Path.join([workspace, ".symphony", "local-bench-gate-blocked"]), "busy\n")
+
+    on_exit(fn -> File.rm_rf(workspace) end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-574",
+      issue: %Issue{id: issue_id, identifier: "MT-574", state: "Rework"},
+      started_at: DateTime.utc_now(),
+      workspace_path: workspace
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.running, issue_id)
+    refute MapSet.member?(state.completed, issue_id)
+    assert %{attempt: 1, delay_type: :local_bench_gate, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
+    assert_due_in_range(due_at_ms, 24_000, 25_500)
+  end
+
+  test "resource gate retry delays use configured cooldowns" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      cloud_gate_retry_cooldown_ms: 12_345,
+      local_bench_gate_retry_cooldown_ms: 2_345
+    )
 
     assert Orchestrator.retry_delay_for_test(1, %{delay_type: :cloud_gate}) == 12_345
     assert Orchestrator.retry_delay_for_test(2, %{delay_type: "cloud_gate"}) == 12_345
+    assert Orchestrator.retry_delay_for_test(1, %{delay_type: :local_bench_gate}) == 2_345
+    assert Orchestrator.retry_delay_for_test(2, %{delay_type: "local_bench_gate"}) == 2_345
     assert Orchestrator.retry_delay_for_test(1, %{delay_type: :continuation}) == 1_000
   end
 

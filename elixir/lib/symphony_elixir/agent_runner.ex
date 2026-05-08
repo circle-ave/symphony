@@ -7,7 +7,10 @@ defmodule SymphonyElixir.AgentRunner do
   alias SymphonyElixir.Codex.AppServer
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
-  @cloud_gate_blocked_marker Path.join([".symphony", "cloud-gate-blocked"])
+  @resource_gate_markers %{
+    cloud_gate: Path.join([".symphony", "cloud-gate-blocked"]),
+    local_bench_gate: Path.join([".symphony", "local-bench-gate-blocked"])
+  }
   @comment_reply_marker "<!-- symphony-comment-reply -->"
 
   @type worker_host :: String.t() | nil
@@ -105,8 +108,8 @@ defmodule SymphonyElixir.AgentRunner do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
       case continue_with_issue?(workspace, issue, issue_state_fetcher) do
-        {:blocked, :cloud_gate} ->
-          Logger.info("Stopping agent continuation for #{issue_context(issue)} because cloud gate marker is present")
+        {:blocked, gate} ->
+          Logger.info("Stopping agent continuation for #{issue_context(issue)} because #{gate} marker is present")
 
           :ok
 
@@ -183,10 +186,9 @@ defmodule SymphonyElixir.AgentRunner do
   defp format_comment_timestamp(_timestamp), do: "unknown"
 
   defp continue_with_issue?(workspace, %Issue{} = issue, issue_state_fetcher) do
-    if cloud_gate_blocked?(workspace) do
-      {:blocked, :cloud_gate}
-    else
-      continue_with_issue_state(issue, issue_state_fetcher)
+    case resource_gate_block(workspace) do
+      nil -> continue_with_issue_state(issue, issue_state_fetcher)
+      gate -> {:blocked, gate}
     end
   end
 
@@ -211,11 +213,13 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp continue_with_issue_state(issue, _issue_state_fetcher), do: {:done, issue}
 
-  defp cloud_gate_blocked?(workspace) when is_binary(workspace) do
-    File.exists?(Path.join(workspace, @cloud_gate_blocked_marker))
+  defp resource_gate_block(workspace) when is_binary(workspace) do
+    Enum.find_value(@resource_gate_markers, fn {gate, marker} ->
+      if File.exists?(Path.join(workspace, marker)), do: gate
+    end)
   end
 
-  defp cloud_gate_blocked?(_workspace), do: false
+  defp resource_gate_block(_workspace), do: nil
 
   defp active_issue_state?(state_name) when is_binary(state_name) do
     normalized_state = normalize_issue_state(state_name)
