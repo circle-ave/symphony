@@ -14,6 +14,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
+      |> assign(:selected_issue_identifier, nil)
+      |> assign(:selected_issue_payload, nil)
+      |> assign(:selected_issue_error, nil)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -34,7 +37,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:payload, load_payload())
-     |> assign(:now, DateTime.utc_now())}
+     |> assign(:now, DateTime.utc_now())
+     |> refresh_selected_issue()}
+  end
+
+  @impl true
+  def handle_event("inspect-session", %{"issue" => issue_identifier}, socket) do
+    {:noreply, inspect_issue(socket, issue_identifier)}
+  end
+
+  @impl true
+  def handle_event("clear-session-inspector", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:selected_issue_identifier, nil)
+     |> assign(:selected_issue_payload, nil)
+     |> assign(:selected_issue_error, nil)}
   end
 
   @impl true
@@ -155,11 +173,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.running}>
+                  <tr
+                    :for={entry <- @payload.running}
+                    class={[@selected_issue_identifier == entry.issue_identifier && "is-selected"]}
+                  >
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        <button
+                          type="button"
+                          class={[
+                            "subtle-button issue-inspect-button",
+                            @selected_issue_identifier == entry.issue_identifier &&
+                              "subtle-button-active"
+                          ]}
+                          phx-click="inspect-session"
+                          phx-value-issue={entry.issue_identifier}
+                        >
+                          Inspect thread
+                        </button>
                       </div>
                     </td>
                     <td>
@@ -211,6 +244,90 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           <% end %>
         </section>
+
+        <%= if @selected_issue_identifier do %>
+          <section class="section-card inspector-card" id="agent-thread">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Agent thread</h2>
+                <p class="section-copy">
+                  <%= @selected_issue_identifier %>
+                  <%= if @selected_issue_payload && @selected_issue_payload.running do %>
+                    · session <span class="mono numeric"><%= @selected_issue_payload.running.session_id %></span>
+                  <% end %>
+                </p>
+              </div>
+
+              <button
+                type="button"
+                class="subtle-button"
+                phx-click="clear-session-inspector"
+              >
+                Close
+              </button>
+            </div>
+
+            <%= if @selected_issue_error do %>
+              <p class="empty-state"><%= @selected_issue_error %></p>
+            <% else %>
+              <div class="inspector-grid">
+                <div class="inspector-meta">
+                  <span class="metric-label">Status</span>
+                  <span><%= @selected_issue_payload.status %></span>
+                </div>
+                <div class="inspector-meta">
+                  <span class="metric-label">Workspace</span>
+                  <span class="mono"><%= @selected_issue_payload.workspace.path %></span>
+                </div>
+                <div class="inspector-meta">
+                  <span class="metric-label">Last event</span>
+                  <span>
+                    <%= if @selected_issue_payload.running do %>
+                      <%= @selected_issue_payload.running.last_message || @selected_issue_payload.running.last_event || "n/a" %>
+                    <% else %>
+                      n/a
+                    <% end %>
+                  </span>
+                </div>
+              </div>
+
+              <%= if @selected_issue_payload.logs.codex_session_logs == [] do %>
+                <p class="empty-state">
+                  No local Codex session log found for this session.
+                </p>
+              <% else %>
+                <div
+                  :for={log <- @selected_issue_payload.logs.codex_session_logs}
+                  class="thread-log"
+                >
+                  <div class="thread-log-meta">
+                    <span class="mono"><%= log.path %></span>
+                    <span>
+                      <%= format_int(log.size_bytes) %> bytes
+                      <%= if log.modified_at do %>
+                        · <span class="mono numeric"><%= log.modified_at %></span>
+                      <% end %>
+                    </span>
+                  </div>
+
+                  <%= if log.truncated do %>
+                    <p class="thread-note">Showing latest <%= length(log.entries) %> events.</p>
+                  <% end %>
+
+                  <ol class="thread-list">
+                    <li :for={event <- log.entries} class="thread-event">
+                      <div class="thread-event-meta">
+                        <span class="mono numeric"><%= event.at || "n/a" %></span>
+                        <span><%= event.kind %></span>
+                      </div>
+                      <pre><%= event.summary %></pre>
+                    </li>
+                  </ol>
+                </div>
+              <% end %>
+            <% end %>
+          </section>
+        <% end %>
 
         <section class="section-card">
           <div class="section-header">
@@ -331,6 +448,28 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+  end
+
+  defp refresh_selected_issue(%{assigns: %{selected_issue_identifier: nil}} = socket), do: socket
+
+  defp refresh_selected_issue(%{assigns: %{selected_issue_identifier: issue_identifier}} = socket) do
+    inspect_issue(socket, issue_identifier)
+  end
+
+  defp inspect_issue(socket, issue_identifier) do
+    case Presenter.issue_payload(issue_identifier, orchestrator(), snapshot_timeout_ms()) do
+      {:ok, payload} ->
+        socket
+        |> assign(:selected_issue_identifier, issue_identifier)
+        |> assign(:selected_issue_payload, payload)
+        |> assign(:selected_issue_error, nil)
+
+      {:error, :issue_not_found} ->
+        socket
+        |> assign(:selected_issue_identifier, issue_identifier)
+        |> assign(:selected_issue_payload, nil)
+        |> assign(:selected_issue_error, "Issue is no longer active in the current snapshot.")
+    end
   end
 
   defp orchestrator do
