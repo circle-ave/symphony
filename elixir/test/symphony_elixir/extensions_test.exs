@@ -79,12 +79,19 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    codex_sessions_dir = System.get_env("SYMPHONY_CODEX_SESSIONS_DIR")
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
         Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+
+      if is_nil(codex_sessions_dir) do
+        System.delete_env("SYMPHONY_CODEX_SESSIONS_DIR")
+      else
+        System.put_env("SYMPHONY_CODEX_SESSIONS_DIR", codex_sessions_dir)
       end
     end)
 
@@ -455,6 +462,66 @@ defmodule SymphonyElixir.ExtensionsTest do
              json_response(conn, 202)
   end
 
+  test "phoenix observability api exposes a matching local codex session log tail" do
+    sessions_dir =
+      Path.join(System.tmp_dir!(), "symphony-codex-sessions-#{System.unique_integer([:positive])}")
+
+    System.put_env("SYMPHONY_CODEX_SESSIONS_DIR", sessions_dir)
+
+    write_codex_session_log!(sessions_dir, "thread-http", [
+      %{
+        "timestamp" => "2026-05-07T17:00:00Z",
+        "type" => "response_item",
+        "payload" => %{
+          "type" => "message",
+          "role" => "assistant",
+          "content" => [
+            %{"type" => "output_text", "text" => "agent found the project panel"}
+          ]
+        }
+      },
+      %{
+        "timestamp" => "2026-05-07T17:00:01Z",
+        "type" => "response_item",
+        "payload" => %{
+          "type" => "function_call",
+          "name" => "exec_command",
+          "arguments" => ~s({"cmd":"mix test"})
+        }
+      }
+    ])
+
+    snapshot = static_snapshot()
+    orchestrator_name = Module.concat(__MODULE__, :CodexLogOrchestrator)
+
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: snapshot})
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    conn = get(build_conn(), "/api/v1/MT-HTTP")
+
+    assert %{
+             "logs" => %{
+               "codex_session_logs" => [
+                 %{
+                   "session_id" => "thread-http",
+                   "entries" => [
+                     %{
+                       "kind" => "response_item/message",
+                       "summary" => "assistant: agent found the project panel"
+                     },
+                     %{
+                       "kind" => "response_item/function_call",
+                       "summary" => "tool call: exec_command {\"cmd\":\"mix test\"}"
+                     }
+                   ]
+                 }
+               ]
+             }
+           } = json_response(conn, 200)
+
+    File.rm_rf!(sessions_dir)
+  end
+
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
     unavailable_orchestrator = Module.concat(__MODULE__, :UnavailableOrchestrator)
     start_test_endpoint(orchestrator: unavailable_orchestrator, snapshot_timeout_ms: 5)
@@ -577,6 +644,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Live"
     assert html =~ "Offline"
     assert html =~ "Copy ID"
+    assert html =~ "Inspect thread"
     assert html =~ "Codex update"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
@@ -584,6 +652,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
+
+    html =
+      view
+      |> element("button[phx-value-issue=\"MT-HTTP\"]", "Inspect thread")
+      |> render_click()
+
+    assert html =~ "Agent thread"
+    assert html =~ "thread-http"
+    assert html =~ "No local Codex session log found"
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -771,6 +848,20 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
 
     HttpServer.bound_port()
+  end
+
+  defp write_codex_session_log!(sessions_dir, session_id, events) do
+    path =
+      Path.join([
+        sessions_dir,
+        "2026",
+        "05",
+        "07",
+        "rollout-test-#{session_id}.jsonl"
+      ])
+
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, Enum.map_join(events, "\n", &Jason.encode!/1))
   end
 
   defp assert_eventually(fun, attempts \\ 20)
