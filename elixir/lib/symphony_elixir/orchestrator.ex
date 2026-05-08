@@ -493,6 +493,14 @@ defmodule SymphonyElixir.Orchestrator do
     resource_gate_retry_should_yield?(issues, retry_issue, state, metadata, terminal_state_set())
   end
 
+  @doc false
+  @spec handle_active_retry_for_test(State.t(), Issue.t(), pos_integer(), map(), [Issue.t()]) ::
+          {:noreply, State.t()}
+  def handle_active_retry_for_test(%State{} = state, %Issue{} = issue, attempt, metadata, issues)
+      when is_integer(attempt) and is_map(metadata) and is_list(issues) do
+    handle_active_retry(state, issue, attempt, metadata, issues)
+  end
+
   @spec cloud_gate_blocked_for_test?(map()) :: boolean()
   def cloud_gate_blocked_for_test?(running_entry) when is_map(running_entry) do
     resource_gate_block(running_entry) == :cloud_gate
@@ -1435,8 +1443,8 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.info("Resource-gated retry yielded to other runnable work: #{issue_context(issue)} delay_type=#{metadata[:delay_type]}")
 
         state =
-          state
-          |> schedule_issue_retry(
+          schedule_issue_retry(
+            state,
             issue.id,
             attempt + 1,
             Map.merge(metadata, %{
@@ -1444,7 +1452,8 @@ defmodule SymphonyElixir.Orchestrator do
               error: resource_gate_retry_yield_error(metadata[:delay_type])
             })
           )
-          |> choose_issues(issues)
+
+        state = choose_issues(issues, state)
 
         {:noreply, state}
 
@@ -1452,8 +1461,8 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.info("Resource-gated retry stayed parked: #{issue_context(issue)} delay_type=#{metadata[:delay_type]}")
 
         state =
-          state
-          |> schedule_issue_retry(
+          schedule_issue_retry(
+            state,
             issue.id,
             attempt + 1,
             Map.merge(metadata, %{
@@ -1461,7 +1470,8 @@ defmodule SymphonyElixir.Orchestrator do
               error: resource_gate_error(metadata[:delay_type])
             })
           )
-          |> choose_issues(issues)
+
+        state = choose_issues(issues, state)
 
         {:noreply, state}
 
