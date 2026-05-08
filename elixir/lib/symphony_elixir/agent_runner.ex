@@ -7,6 +7,7 @@ defmodule SymphonyElixir.AgentRunner do
   alias SymphonyElixir.Codex.AppServer
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
+  @cloud_gate_blocked_marker Path.join([".symphony", "cloud-gate-blocked"])
   @comment_reply_marker "<!-- symphony-comment-reply -->"
 
   @type worker_host :: String.t() | nil
@@ -111,7 +112,12 @@ defmodule SymphonyElixir.AgentRunner do
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
+      case continue_with_issue?(workspace, issue, issue_state_fetcher) do
+        {:blocked, :cloud_gate} ->
+          Logger.info("Stopping agent continuation for #{issue_context(issue)} because cloud gate marker is present")
+
+          :ok
+
         {:continue, refreshed_issue} when turn_number < max_turns ->
           Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
@@ -184,7 +190,17 @@ defmodule SymphonyElixir.AgentRunner do
   defp format_comment_timestamp(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp format_comment_timestamp(_timestamp), do: "unknown"
 
-  defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
+  defp continue_with_issue?(workspace, %Issue{} = issue, issue_state_fetcher) do
+    if cloud_gate_blocked?(workspace) do
+      {:blocked, :cloud_gate}
+    else
+      continue_with_issue_state(issue, issue_state_fetcher)
+    end
+  end
+
+  defp continue_with_issue?(_workspace, issue, _issue_state_fetcher), do: {:done, issue}
+
+  defp continue_with_issue_state(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
         if active_issue_state?(refreshed_issue.state) and issue_routable?(refreshed_issue) do
@@ -201,7 +217,13 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
+  defp continue_with_issue_state(issue, _issue_state_fetcher), do: {:done, issue}
+
+  defp cloud_gate_blocked?(workspace) when is_binary(workspace) do
+    File.exists?(Path.join(workspace, @cloud_gate_blocked_marker))
+  end
+
+  defp cloud_gate_blocked?(_workspace), do: false
 
   defp active_issue_state?(state_name) when is_binary(state_name) do
     normalized_state = normalize_issue_state(state_name)

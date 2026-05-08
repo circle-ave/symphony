@@ -954,6 +954,63 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 500, 1_100)
   end
 
+  test "normal worker exit with cloud gate marker schedules cooldown retry" do
+    issue_id = "issue-cloud-gate"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :CloudGateRetryOrchestrator)
+
+    write_workflow_file!(Workflow.workflow_file_path(), cloud_gate_retry_cooldown_ms: 60_000)
+
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    workspace = Path.join(System.tmp_dir!(), "symphony-cloud-gate-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+    File.write!(Path.join([workspace, ".symphony", "cloud-gate-blocked"]), "busy\n")
+
+    on_exit(fn -> File.rm_rf(workspace) end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-573",
+      issue: %Issue{id: issue_id, identifier: "MT-573", state: "Rework"},
+      started_at: DateTime.utc_now(),
+      workspace_path: workspace
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.running, issue_id)
+    refute MapSet.member?(state.completed, issue_id)
+    assert %{attempt: 1, delay_type: :cloud_gate, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
+    assert_due_in_range(due_at_ms, 59_000, 60_500)
+  end
+
+  test "cloud gate retry delay uses configured cooldown" do
+    write_workflow_file!(Workflow.workflow_file_path(), cloud_gate_retry_cooldown_ms: 12_345)
+
+    assert Orchestrator.retry_delay_for_test(1, %{delay_type: :cloud_gate}) == 12_345
+    assert Orchestrator.retry_delay_for_test(2, %{delay_type: "cloud_gate"}) == 12_345
+    assert Orchestrator.retry_delay_for_test(1, %{delay_type: :continuation}) == 1_000
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()
@@ -1657,7 +1714,7 @@ defmodule SymphonyElixir.CoreTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      trace_file="${SYMP_TEST_CODEX_TRACE:-/tmp/codex.trace}"
       run_id="$(date +%s%N)-$$"
       printf 'RUN:%s\\n' "$run_id" >> "$trace_file"
       count=0
@@ -1687,9 +1744,9 @@ defmodule SymphonyElixir.CoreTest do
       """)
 
       File.chmod!(codex_binary, 0o755)
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      System.put_env("SYMP_TEST_CODEX_TRACE", trace_file)
 
-      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEX_TRACE") end)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1760,7 +1817,114 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
       assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"
     after
-      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      System.delete_env("SYMP_TEST_CODEX_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner returns to orchestrator when cloud gate marker appears after a turn" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-cloud-gate-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEX_TRACE:-/tmp/codex.trace}"
+      printf 'RUN\\n' >> "$trace_file"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-cloud-gate"}}}'
+            ;;
+          4)
+            mkdir -p .symphony
+            printf 'cloud auth unavailable\\n' > .symphony/cloud-gate-blocked
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cloud-gate-1"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          5)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cloud-gate-2"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEX_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEX_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server",
+        max_turns: 3
+      )
+
+      parent = self()
+
+      state_fetcher = fn [_issue_id] ->
+        send(parent, :unexpected_issue_state_fetch)
+
+        {:ok,
+         [
+           %Issue{
+             id: "issue-cloud-gate-runner",
+             identifier: "MT-249",
+             title: "Stop on cloud gate",
+             description: "Still active",
+             state: "In Progress"
+           }
+         ]}
+      end
+
+      issue = %Issue{
+        id: "issue-cloud-gate-runner",
+        identifier: "MT-249",
+        title: "Stop on cloud gate",
+        description: "Still active",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-249",
+        labels: []
+      }
+
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      refute_receive :unexpected_issue_state_fetch, 50
+
+      trace = File.read!(trace_file)
+      assert length(String.split(trace, "RUN", trim: true)) == 1
+      assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 1
+
+      assert File.read!(Path.join([workspace_root, "MT-249", ".symphony", "cloud-gate-blocked"])) =~
+               "cloud auth unavailable"
+    after
+      System.delete_env("SYMP_TEST_CODEX_TRACE")
       File.rm_rf(test_root)
     end
   end
@@ -1788,7 +1952,7 @@ defmodule SymphonyElixir.CoreTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      trace_file="${SYMP_TEST_CODEX_TRACE:-/tmp/codex.trace}"
       printf 'RUN\\n' >> "$trace_file"
       count=0
 
@@ -1817,9 +1981,9 @@ defmodule SymphonyElixir.CoreTest do
       """)
 
       File.chmod!(codex_binary, 0o755)
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      System.put_env("SYMP_TEST_CODEX_TRACE", trace_file)
 
-      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEX_TRACE") end)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1857,7 +2021,7 @@ defmodule SymphonyElixir.CoreTest do
       assert length(String.split(trace, "RUN", trim: true)) == 1
       assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 2
     after
-      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      System.delete_env("SYMP_TEST_CODEX_TRACE")
       File.rm_rf(test_root)
     end
   end

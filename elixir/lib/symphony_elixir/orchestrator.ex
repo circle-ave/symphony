@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @cloud_gate_blocked_marker Path.join([".symphony", "cloud-gate-blocked"])
   @comment_reply_reserved_slots 1
   @comment_reply_marker "<!-- symphony-comment-reply -->"
   # Slightly above the dashboard render interval so "checking now…" can render.
@@ -201,21 +202,35 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
-    if input_required_blocker?(running_entry) do
-      block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
-    else
-      Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+    cond do
+      cloud_gate_blocked?(running_entry) ->
+        Logger.info("Agent task paused for issue_id=#{issue_id} session_id=#{session_id}; cloud gate is busy")
 
-      state
-      |> maybe_mark_comment_reply_seen(running_entry)
-      |> complete_issue(issue_id)
-      |> schedule_issue_retry(issue_id, 1, %{
-        identifier: running_entry.identifier,
-        issue_url: running_entry.issue.url,
-        delay_type: :continuation,
-        worker_host: Map.get(running_entry, :worker_host),
-        workspace_path: Map.get(running_entry, :workspace_path)
-      })
+        schedule_issue_retry(state, issue_id, 1, %{
+          identifier: running_entry.identifier,
+          issue_url: running_entry.issue.url,
+          delay_type: :cloud_gate,
+          error: "cloud gate busy",
+          worker_host: Map.get(running_entry, :worker_host),
+          workspace_path: Map.get(running_entry, :workspace_path)
+        })
+
+      input_required_blocker?(running_entry) ->
+        block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
+
+      true ->
+        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+
+        state
+        |> maybe_mark_comment_reply_seen(running_entry)
+        |> complete_issue(issue_id)
+        |> schedule_issue_retry(issue_id, 1, %{
+          identifier: running_entry.identifier,
+          issue_url: running_entry.issue.url,
+          delay_type: :continuation,
+          worker_host: Map.get(running_entry, :worker_host),
+          workspace_path: Map.get(running_entry, :workspace_path)
+        })
     end
   end
 
@@ -419,6 +434,18 @@ defmodule SymphonyElixir.Orchestrator do
   @spec should_dispatch_comment_reply_issue_for_test(Issue.t(), term()) :: boolean()
   def should_dispatch_comment_reply_issue_for_test(%Issue{} = issue, %State{} = state) do
     should_dispatch_comment_reply_issue?(issue, state, terminal_state_set())
+  end
+
+  @doc false
+  @spec retry_delay_for_test(pos_integer(), map()) :: pos_integer()
+  def retry_delay_for_test(attempt, metadata) when is_integer(attempt) and is_map(metadata) do
+    retry_delay(attempt, metadata)
+  end
+
+  @doc false
+  @spec cloud_gate_blocked_for_test?(map()) :: boolean()
+  def cloud_gate_blocked_for_test?(running_entry) when is_map(running_entry) do
+    cloud_gate_blocked?(running_entry)
   end
 
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
@@ -1178,6 +1205,7 @@ defmodule SymphonyElixir.Orchestrator do
     error = pick_retry_error(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
+    delay_type = pick_retry_delay_type(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1201,7 +1229,8 @@ defmodule SymphonyElixir.Orchestrator do
             issue_url: issue_url,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            delay_type: delay_type
           })
     }
   end
@@ -1214,7 +1243,8 @@ defmodule SymphonyElixir.Orchestrator do
           issue_url: Map.get(retry_entry, :issue_url),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          delay_type: Map.get(retry_entry, :delay_type)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1225,6 +1255,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
+    metadata = Map.delete(metadata, :delay_type)
+
     case Tracker.fetch_candidate_issues() do
       {:ok, issues} ->
         issues
@@ -1335,10 +1367,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
-    if metadata[:delay_type] == :continuation and attempt == 1 do
-      @continuation_retry_delay_ms
-    else
-      failure_retry_delay(attempt)
+    case {metadata[:delay_type], attempt} do
+      {:continuation, 1} -> @continuation_retry_delay_ms
+      {"continuation", 1} -> @continuation_retry_delay_ms
+      {:cloud_gate, _attempt} -> Config.settings!().agent.cloud_gate_retry_cooldown_ms
+      {"cloud_gate", _attempt} -> Config.settings!().agent.cloud_gate_retry_cooldown_ms
+      _ -> failure_retry_delay(attempt)
     end
   end
 
@@ -1375,6 +1409,20 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp pick_retry_workspace_path(previous_retry, metadata) do
     metadata[:workspace_path] || Map.get(previous_retry, :workspace_path)
+  end
+
+  defp pick_retry_delay_type(previous_retry, metadata) do
+    metadata[:delay_type] || Map.get(previous_retry, :delay_type)
+  end
+
+  defp cloud_gate_blocked?(running_entry) when is_map(running_entry) do
+    case Map.get(running_entry, :workspace_path) do
+      workspace_path when is_binary(workspace_path) ->
+        File.exists?(Path.join(workspace_path, @cloud_gate_blocked_marker))
+
+      _ ->
+        false
+    end
   end
 
   defp maybe_put_runtime_value(running_entry, _key, nil), do: running_entry
