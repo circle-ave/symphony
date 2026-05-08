@@ -943,6 +943,50 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.retry_delay_for_test(1, %{delay_type: :continuation}) == 1_000
   end
 
+  test "resource-gated retries yield slots to other runnable issues" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: ["Rework"],
+      tracker_terminal_states: ["Done"],
+      tracker_comment_reply_states: [],
+      max_concurrent_agents: 2
+    )
+
+    gated_issue = %Issue{
+      id: "issue-cloud-gated",
+      identifier: "MT-575",
+      title: "Cloud gated retry",
+      state: "Rework"
+    }
+
+    runnable_issue = %Issue{
+      id: "issue-runnable",
+      identifier: "MT-576",
+      title: "Runnable local work",
+      state: "Rework"
+    }
+
+    state = %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new(["issue-cloud-gated"]),
+      retry_attempts: %{},
+      max_concurrent_agents: 2
+    }
+
+    assert Orchestrator.resource_gate_retry_should_yield_for_test?(
+             [gated_issue, runnable_issue],
+             gated_issue,
+             state,
+             %{delay_type: :cloud_gate}
+           )
+
+    refute Orchestrator.resource_gate_retry_should_yield_for_test?(
+             [gated_issue, runnable_issue],
+             gated_issue,
+             state,
+             %{delay_type: :continuation}
+           )
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()
