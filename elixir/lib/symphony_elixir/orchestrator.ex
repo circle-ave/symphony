@@ -15,6 +15,7 @@ defmodule SymphonyElixir.Orchestrator do
   @resource_gate_released_retry_delay_ms 1_000
   @resource_gate_slot_retry_delay_ms 1_000
   @resource_lock_orphan_grace_ms 10_000
+  @terminal_workspace_cleanup_interval_ms 600_000
   @resource_gate_markers %{
     cloud_gate: Path.join([".symphony", "cloud-gate-blocked"]),
     local_bench_gate: Path.join([".symphony", "local-bench-gate-blocked"])
@@ -42,6 +43,7 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      :terminal_workspace_cleanup_due_at_ms,
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
@@ -77,7 +79,11 @@ defmodule SymphonyElixir.Orchestrator do
     }
 
     run_terminal_workspace_cleanup()
-    state = schedule_tick(state, 0)
+
+    state =
+      state
+      |> Map.put(:terminal_workspace_cleanup_due_at_ms, now_ms + @terminal_workspace_cleanup_interval_ms)
+      |> schedule_tick(0)
 
     {:ok, state}
   end
@@ -121,6 +127,7 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
     state = cleanup_orphaned_resource_locks(state)
+    state = maybe_run_terminal_workspace_cleanup(state)
     state = wake_released_resource_gate_retries(state)
     state = maybe_dispatch(state)
     state = schedule_tick(state, state.poll_interval_ms)
@@ -440,6 +447,12 @@ defmodule SymphonyElixir.Orchestrator do
   @spec wake_released_resource_gate_retries_for_test(State.t()) :: State.t()
   def wake_released_resource_gate_retries_for_test(%State{} = state) do
     wake_released_resource_gate_retries(state)
+  end
+
+  @doc false
+  @spec resource_gate_retry_still_blocked_for_test?(map()) :: boolean()
+  def resource_gate_retry_still_blocked_for_test?(metadata) when is_map(metadata) do
+    resource_gate_retry_still_blocked?(metadata)
   end
 
   @doc false
@@ -1372,6 +1385,23 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp maybe_run_terminal_workspace_cleanup(%State{} = state) do
+    now_ms = System.monotonic_time(:millisecond)
+
+    if terminal_workspace_cleanup_due?(state, now_ms) do
+      run_terminal_workspace_cleanup()
+      %{state | terminal_workspace_cleanup_due_at_ms: now_ms + @terminal_workspace_cleanup_interval_ms}
+    else
+      state
+    end
+  end
+
+  defp terminal_workspace_cleanup_due?(%State{terminal_workspace_cleanup_due_at_ms: due_at_ms}, now_ms)
+       when is_integer(due_at_ms) and is_integer(now_ms),
+       do: due_at_ms <= now_ms
+
+  defp terminal_workspace_cleanup_due?(_state, _now_ms), do: true
+
   defp notify_dashboard do
     StatusDashboard.notify_update()
   end
@@ -1391,6 +1421,23 @@ defmodule SymphonyElixir.Orchestrator do
             Map.merge(metadata, %{
               identifier: issue.identifier,
               error: resource_gate_retry_yield_error(metadata[:delay_type])
+            })
+          )
+          |> choose_issues(issues)
+
+        {:noreply, state}
+
+      resource_gate_retry_still_blocked?(metadata) ->
+        Logger.info("Resource-gated retry stayed parked: #{issue_context(issue)} delay_type=#{metadata[:delay_type]}")
+
+        state =
+          state
+          |> schedule_issue_retry(
+            issue.id,
+            attempt + 1,
+            Map.merge(metadata, %{
+              identifier: issue.identifier,
+              error: resource_gate_error(metadata[:delay_type])
             })
           )
           |> choose_issues(issues)
@@ -1447,6 +1494,25 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp resource_gate_delay_type?(delay_type), do: delay_type in [:cloud_gate, "cloud_gate", :local_bench_gate, "local_bench_gate"]
+
+  defp resource_gate_retry_still_blocked?(metadata) when is_map(metadata) do
+    delay_type = normalize_resource_gate_delay_type(Map.get(metadata, :delay_type))
+    workspace_path = Map.get(metadata, :workspace_path)
+
+    cond do
+      delay_type == nil ->
+        false
+
+      !is_binary(workspace_path) or workspace_path == "" ->
+        false
+
+      true ->
+        marker_path = Path.join(workspace_path, Map.fetch!(@resource_gate_markers, delay_type))
+        File.exists?(marker_path) and not marker_resource_gate_released?(delay_type, marker_path)
+    end
+  end
+
+  defp resource_gate_retry_still_blocked?(_metadata), do: false
 
   defp resource_gate_retry_yield_error(:cloud_gate), do: "cloud gate yielded to runnable work"
   defp resource_gate_retry_yield_error("cloud_gate"), do: "cloud gate yielded to runnable work"
@@ -1520,9 +1586,20 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp marker_resource_gate_released?(:cloud_gate, marker_path) do
-    with {:ok, marker} <- File.read(marker_path),
-         lock_path when is_binary(lock_path) and lock_path != "" <- marker_value(marker, "lock") do
-      !File.exists?(lock_path)
+    with {:ok, marker} <- File.read(marker_path) do
+      cond do
+        marker_resource_job_running?(marker) ->
+          false
+
+        marker_resource_job_present?(marker) ->
+          true
+
+        lock_path = marker_value(marker, "lock") ->
+          !File.exists?(lock_path)
+
+        true ->
+          false
+      end
     else
       _ -> false
     end
@@ -1530,6 +1607,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp marker_resource_gate_released?(:local_bench_gate, marker_path) do
     with {:ok, marker} <- File.read(marker_path),
+         false <- marker_resource_job_running?(marker),
          base when is_binary(base) and base != "" <- marker_value(marker, "base") do
       size =
         marker
@@ -1541,6 +1619,29 @@ defmodule SymphonyElixir.Orchestrator do
         not File.exists?(local_bench_lock_path(slot, base))
       end)
     else
+      _ -> false
+    end
+  end
+
+  defp marker_resource_job_running?(marker) when is_binary(marker) do
+    case marker_value(marker, "status_path") || marker_value(marker, "job_status_path") do
+      status_path when is_binary(status_path) and status_path != "" ->
+        case File.read(status_path) do
+          {:ok, status} ->
+            marker_value(status, "status") in ["queued", "running"]
+
+          {:error, _reason} ->
+            false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp marker_resource_job_present?(marker) when is_binary(marker) do
+    case marker_value(marker, "status_path") || marker_value(marker, "job_status_path") do
+      status_path when is_binary(status_path) and status_path != "" -> true
       _ -> false
     end
   end
@@ -1807,6 +1908,59 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_resource_gate_delay_type("local_bench_gate"), do: :local_bench_gate
   defp normalize_resource_gate_delay_type(_delay_type), do: nil
 
+  defp resource_status_for_entry(entry) when is_map(entry) do
+    workspace_path = Map.get(entry, :workspace_path)
+    delay_type = normalize_resource_gate_delay_type(Map.get(entry, :delay_type))
+
+    cond do
+      is_binary(workspace_path) and workspace_path != "" ->
+        resource_status_from_workspace(workspace_path, delay_type) ||
+          if(delay_type != nil, do: %{gate: Atom.to_string(delay_type), blocked: false})
+
+      delay_type != nil ->
+        %{gate: Atom.to_string(delay_type), blocked: nil}
+
+      true ->
+        nil
+    end
+  end
+
+  defp resource_status_for_entry(_entry), do: nil
+
+  defp resource_status_from_workspace(workspace_path, preferred_delay_type) do
+    delay_types =
+      [preferred_delay_type | Map.keys(@resource_gate_markers)]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    Enum.find_value(delay_types, fn delay_type ->
+      marker_path = Path.join(workspace_path, Map.fetch!(@resource_gate_markers, delay_type))
+
+      if File.exists?(marker_path) do
+        resource_status_from_marker(delay_type, marker_path)
+      end
+    end)
+  end
+
+  defp resource_status_from_marker(delay_type, marker_path) do
+    marker = File.read(marker_path) |> elem_or_nil()
+
+    %{
+      gate: Atom.to_string(delay_type),
+      blocked: not marker_resource_gate_released?(delay_type, marker_path),
+      marker_path: marker_path,
+      lock_path: marker && marker_value(marker, "lock"),
+      job_id: marker && marker_value(marker, "job_id"),
+      job_dir: marker && marker_value(marker, "job_dir"),
+      status_path: marker && marker_value(marker, "status_path")
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp elem_or_nil({:ok, value}), do: value
+  defp elem_or_nil(_result), do: nil
+
   defp rearm_retry_attempt(%State{} = state, issue_id, retry_entry, delay_ms, error)
        when is_binary(issue_id) and is_map(retry_entry) and is_integer(delay_ms) and delay_ms >= 0 do
     if is_reference(Map.get(retry_entry, :timer_ref)) do
@@ -2067,6 +2221,7 @@ defmodule SymphonyElixir.Orchestrator do
           state: metadata.issue.state,
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
+          resource_status: resource_status_for_entry(metadata),
           session_id: metadata.session_id,
           codex_app_server_pid: metadata.codex_app_server_pid,
           codex_input_tokens: metadata.codex_input_tokens,
@@ -2092,7 +2247,8 @@ defmodule SymphonyElixir.Orchestrator do
           error: Map.get(retry, :error),
           delay_type: Map.get(retry, :delay_type),
           worker_host: Map.get(retry, :worker_host),
-          workspace_path: Map.get(retry, :workspace_path)
+          workspace_path: Map.get(retry, :workspace_path),
+          resource_status: resource_status_for_entry(retry)
         }
       end)
 

@@ -1071,6 +1071,58 @@ defmodule SymphonyElixir.CoreTest do
     Process.cancel_timer(retry.timer_ref)
   end
 
+  test "resource-gated retry remains parked while its gate lock is live" do
+    workspace = Path.join(System.tmp_dir!(), "symphony-cloud-gate-park-#{System.unique_integer([:positive])}")
+    lock_dir = Path.join(System.tmp_dir!(), "symphony-cloud-gate-lock-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+    File.mkdir_p!(lock_dir)
+    File.write!(Path.join([workspace, ".symphony", "cloud-gate-blocked"]), "lock=#{lock_dir}\n")
+
+    on_exit(fn ->
+      File.rm_rf(workspace)
+      File.rm_rf(lock_dir)
+    end)
+
+    assert Orchestrator.resource_gate_retry_still_blocked_for_test?(%{
+             delay_type: :cloud_gate,
+             workspace_path: workspace
+           })
+
+    File.rm_rf!(lock_dir)
+
+    refute Orchestrator.resource_gate_retry_still_blocked_for_test?(%{
+             delay_type: :cloud_gate,
+             workspace_path: workspace
+           })
+  end
+
+  test "resource-gated retry remains parked while an async resource job is running" do
+    workspace = Path.join(System.tmp_dir!(), "symphony-resource-job-park-#{System.unique_integer([:positive])}")
+    status_path = Path.join(System.tmp_dir!(), "symphony-resource-job-status-#{System.unique_integer([:positive])}.env")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+    File.write!(status_path, "status=running\n")
+    File.write!(Path.join([workspace, ".symphony", "cloud-gate-blocked"]), "status_path=#{status_path}\n")
+
+    on_exit(fn ->
+      File.rm_rf(workspace)
+      File.rm(status_path)
+    end)
+
+    assert Orchestrator.resource_gate_retry_still_blocked_for_test?(%{
+             delay_type: :cloud_gate,
+             workspace_path: workspace
+           })
+
+    File.write!(status_path, "status=failed\nexit_code=1\n")
+
+    refute Orchestrator.resource_gate_retry_still_blocked_for_test?(%{
+             delay_type: :cloud_gate,
+             workspace_path: workspace
+           })
+  end
+
   test "released local bench gate retries wake when a pool slot is free" do
     workspace =
       Path.join(System.tmp_dir!(), "symphony-local-bench-release-#{System.unique_integer([:positive])}")
