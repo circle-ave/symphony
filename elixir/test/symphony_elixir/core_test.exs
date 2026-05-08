@@ -1097,6 +1097,48 @@ defmodule SymphonyElixir.CoreTest do
            })
   end
 
+  test "parked resource-gated retry reschedules without crashing dispatcher" do
+    workspace =
+      Path.join(System.tmp_dir!(), "symphony-cloud-gate-retry-dispatch-#{System.unique_integer([:positive])}")
+
+    lock_dir =
+      Path.join(System.tmp_dir!(), "symphony-cloud-gate-retry-lock-#{System.unique_integer([:positive])}")
+
+    issue = %Issue{
+      id: "issue-cloud-gate",
+      identifier: "MT-578",
+      title: "Cloud gated retry",
+      state: "Rework"
+    }
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+    File.mkdir_p!(lock_dir)
+    File.write!(Path.join([workspace, ".symphony", "cloud-gate-blocked"]), "lock=#{lock_dir}\n")
+
+    on_exit(fn ->
+      File.rm_rf(workspace)
+      File.rm_rf(lock_dir)
+    end)
+
+    state = %Orchestrator.State{
+      claimed: MapSet.new([issue.id]),
+      max_concurrent_agents: 2
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_active_retry_for_test(
+               state,
+               issue,
+               1,
+               %{delay_type: :cloud_gate, workspace_path: workspace},
+               [issue]
+             )
+
+    assert %{attempt: 2, error: "cloud gate busy"} = retry = updated_state.retry_attempts[issue.id]
+    assert is_reference(retry.timer_ref)
+    Process.cancel_timer(retry.timer_ref)
+  end
+
   test "resource-gated retry remains parked while an async resource job is running" do
     workspace = Path.join(System.tmp_dir!(), "symphony-resource-job-park-#{System.unique_integer([:positive])}")
     status_path = Path.join(System.tmp_dir!(), "symphony-resource-job-status-#{System.unique_integer([:positive])}.env")
