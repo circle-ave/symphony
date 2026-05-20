@@ -1387,6 +1387,42 @@ defmodule SymphonyElixir.CoreTest do
     assert File.exists?(lock_dir)
   end
 
+  test "resource lock cleanup preserves inactive live owner locks" do
+    lock_dir = Path.join(System.tmp_dir!(), "symphony-inactive-live-owner-lock-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(lock_dir)
+
+    port =
+      Port.open({:spawn_executable, System.find_executable("bash")}, [
+        :binary,
+        args: ["-c", "exec -a with_frappe_cloud_deploy_lock.sh sleep 60"]
+      ])
+
+    {:os_pid, owner_pid} = Port.info(port, :os_pid)
+
+    File.write!(
+      Path.join(lock_dir, "owner"),
+      "pid=#{owner_pid}\ntarget_issue=MT-580A\nstarted_at=2026-05-08T00:00:00Z\n"
+    )
+
+    File.touch!(lock_dir, {{2020, 1, 1}, {0, 0, 0}})
+
+    on_exit(fn ->
+      if Port.info(port) do
+        Port.close(port)
+      end
+
+      System.cmd("kill", ["-TERM", Integer.to_string(owner_pid)], stderr_to_stdout: true)
+      File.rm_rf(lock_dir)
+    end)
+
+    state = %Orchestrator.State{running: %{}, retry_attempts: %{}}
+
+    Orchestrator.cleanup_orphaned_resource_locks_for_test(state, [lock_dir])
+
+    assert File.exists?(lock_dir)
+    assert {_, 0} = System.cmd("kill", ["-0", Integer.to_string(owner_pid)], stderr_to_stdout: true)
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()

@@ -14,7 +14,6 @@ defmodule SymphonyElixir.Orchestrator do
   @failure_retry_base_ms 10_000
   @resource_gate_released_retry_delay_ms 1_000
   @resource_gate_slot_retry_delay_ms 1_000
-  @resource_lock_orphan_grace_ms 10_000
   @terminal_workspace_cleanup_interval_ms 600_000
   @resource_gate_markers %{
     cloud_gate: Path.join([".symphony", "cloud-gate-blocked"]),
@@ -1678,29 +1677,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp cleanup_orphaned_resource_locks(%State{} = state, lock_paths \\ nil) do
-    active_identifiers = active_resource_lock_identifiers(state)
-
     (lock_paths || resource_lock_paths_for_cleanup(state))
     |> Enum.uniq()
-    |> Enum.each(&cleanup_orphaned_resource_lock(&1, active_identifiers))
+    |> Enum.each(&cleanup_orphaned_resource_lock/1)
 
     state
-  end
-
-  defp active_resource_lock_identifiers(%State{} = state) do
-    running_identifiers =
-      state.running
-      |> Map.values()
-      |> Enum.map(&Map.get(&1, :identifier))
-
-    retry_identifiers =
-      state.retry_attempts
-      |> Map.values()
-      |> Enum.map(&Map.get(&1, :identifier))
-
-    (running_identifiers ++ retry_identifiers)
-    |> Enum.filter(&(is_binary(&1) and &1 != ""))
-    |> MapSet.new()
   end
 
   defp resource_lock_paths_for_cleanup(%State{} = state) do
@@ -1763,11 +1744,11 @@ defmodule SymphonyElixir.Orchestrator do
       Path.join([System.user_home!(), ".cache", "symphony", "frappe-cloud-deploy.use.lock"])
   end
 
-  defp cleanup_orphaned_resource_lock(lock_path, active_identifiers) when is_binary(lock_path) do
+  defp cleanup_orphaned_resource_lock(lock_path) when is_binary(lock_path) do
     if File.exists?(lock_path) do
       case read_resource_lock_owner(lock_path) do
         {:ok, owner} ->
-          maybe_cleanup_owned_resource_lock(lock_path, owner, active_identifiers)
+          maybe_cleanup_owned_resource_lock(lock_path, owner)
 
         :missing_owner ->
           :ok
@@ -1775,7 +1756,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp cleanup_orphaned_resource_lock(_lock_path, _active_identifiers), do: :ok
+  defp cleanup_orphaned_resource_lock(_lock_path), do: :ok
 
   defp read_resource_lock_owner(lock_path) when is_binary(lock_path) do
     owner_path = Path.join(lock_path, "owner")
@@ -1799,19 +1780,12 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp maybe_cleanup_owned_resource_lock(lock_path, owner, active_identifiers) do
+  defp maybe_cleanup_owned_resource_lock(lock_path, owner) do
     owner_pid = owner_pid(owner)
-    owner_identifier = owner_identifier(owner)
-    owner_active? = is_binary(owner_identifier) and MapSet.member?(active_identifiers, owner_identifier)
 
     cond do
       is_integer(owner_pid) and not os_pid_alive?(owner_pid) ->
         remove_resource_lock(lock_path, owner, "owner pid is no longer running")
-
-      is_integer(owner_pid) and not owner_active? and resource_lock_older_than?(lock_path, @resource_lock_orphan_grace_ms) and
-          managed_resource_lock_owner_process?(owner_pid) ->
-        terminate_process_tree(owner_pid)
-        remove_resource_lock(lock_path, owner, "owner issue is no longer active")
 
       true ->
         :ok
@@ -1825,16 +1799,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp owner_identifier(owner) when is_map(owner) do
-    ["target_issue", "issue", "issue_identifier"]
-    |> Enum.find_value(fn key ->
-      case Map.get(owner, key) do
-        value when is_binary(value) and value != "" -> value
-        _ -> nil
-      end
-    end)
-  end
-
   defp os_pid_alive?(pid) when is_integer(pid) do
     case System.cmd("kill", ["-0", Integer.to_string(pid)], stderr_to_stdout: true) do
       {_output, 0} -> true
@@ -1842,72 +1806,10 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp managed_resource_lock_owner_process?(pid) when is_integer(pid) do
-    case os_process_command(pid) do
-      {:ok, command} ->
-        String.contains?(command, [
-          "with_frappe_cloud_deploy_lock.sh",
-          "with_frappe_cloud_review_target.sh",
-          "with_shared_local_frappe_bench.sh"
-        ])
-
-      :error ->
-        false
-    end
-  end
-
-  defp os_process_command(pid) when is_integer(pid) do
-    case System.cmd("ps", ["-p", Integer.to_string(pid), "-o", "command="], stderr_to_stdout: true) do
-      {output, 0} -> {:ok, String.trim(output)}
-      _ -> :error
-    end
-  end
-
-  defp terminate_process_tree(pid) when is_integer(pid) do
-    pid
-    |> child_pids()
-    |> Enum.each(&terminate_process_tree/1)
-
-    current_pid =
-      System.pid()
-      |> to_string()
-
-    unless Integer.to_string(pid) == current_pid do
-      System.cmd("kill", ["-TERM", Integer.to_string(pid)], stderr_to_stdout: true)
-    end
-  end
-
-  defp child_pids(pid) when is_integer(pid) do
-    case System.cmd("pgrep", ["-P", Integer.to_string(pid)], stderr_to_stdout: true) do
-      {output, 0} ->
-        output
-        |> String.split()
-        |> Enum.flat_map(fn value ->
-          case Integer.parse(value) do
-            {child_pid, ""} -> [child_pid]
-            _ -> []
-          end
-        end)
-
-      _ ->
-        []
-    end
-  end
-
   defp remove_resource_lock(lock_path, owner, reason) do
     Logger.warning("Removing orphaned resource lock path=#{lock_path} reason=#{reason} owner=#{inspect(owner)}")
     File.rm_rf(lock_path)
     :ok
-  end
-
-  defp resource_lock_older_than?(lock_path, grace_ms) when is_binary(lock_path) and is_integer(grace_ms) do
-    case File.stat(lock_path, time: :posix) do
-      {:ok, %{mtime: mtime}} when is_integer(mtime) ->
-        (System.system_time(:second) - mtime) * 1_000 >= grace_ms
-
-      _ ->
-        false
-    end
   end
 
   defp marker_value(marker, key) when is_binary(marker) and is_binary(key) do
