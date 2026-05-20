@@ -537,6 +537,48 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Enum.map(sorted, & &1.identifier) == ["MT-200", "MT-201", "MT-199"]
   end
 
+  test "orchestrator sorts dispatch by configured active state before issue priority" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: ["Merging", "Rework", "In Progress", "Todo"]
+    )
+
+    todo_high_priority = %Issue{
+      id: "issue-todo-high",
+      identifier: "MT-300",
+      title: "Todo high priority",
+      state: "Todo",
+      priority: 1,
+      created_at: ~U[2026-01-01 00:00:00Z]
+    }
+
+    merging_low_priority = %Issue{
+      id: "issue-merging-low",
+      identifier: "MT-301",
+      title: "Merging low priority",
+      state: "Merging",
+      priority: 4,
+      created_at: ~U[2026-01-02 00:00:00Z]
+    }
+
+    in_progress_high_priority = %Issue{
+      id: "issue-progress-high",
+      identifier: "MT-302",
+      title: "In progress high priority",
+      state: "In Progress",
+      priority: 1,
+      created_at: ~U[2025-12-01 00:00:00Z]
+    }
+
+    sorted =
+      Orchestrator.sort_issues_for_dispatch_for_test([
+        todo_high_priority,
+        in_progress_high_priority,
+        merging_low_priority
+      ])
+
+    assert Enum.map(sorted, & &1.identifier) == ["MT-301", "MT-302", "MT-300"]
+  end
+
   test "todo issue with non-terminal blocker is not dispatch-eligible" do
     state = %Orchestrator.State{
       max_concurrent_agents: 3,

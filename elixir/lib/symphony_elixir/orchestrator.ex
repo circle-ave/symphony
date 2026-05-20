@@ -1004,13 +1004,36 @@ defmodule SymphonyElixir.Orchestrator do
   defp running_comment_reply_issue?(_state, _issue_id), do: false
 
   defp sort_issues_for_dispatch(issues) when is_list(issues) do
+    active_state_order = active_state_dispatch_order()
+
     Enum.sort_by(issues, fn
       %Issue{} = issue ->
-        {priority_rank(issue.priority), issue_created_at_sort_key(issue), issue.identifier || issue.id || ""}
+        {
+          issue_state_dispatch_rank(issue.state, active_state_order),
+          priority_rank(issue.priority),
+          issue_created_at_sort_key(issue),
+          issue.identifier || issue.id || ""
+        }
 
       _ ->
-        {priority_rank(nil), issue_created_at_sort_key(nil), ""}
+        {
+          issue_state_dispatch_rank(nil, active_state_order),
+          priority_rank(nil),
+          issue_created_at_sort_key(nil),
+          ""
+        }
     end)
+  end
+
+  defp active_state_dispatch_order do
+    Config.settings!().tracker.active_states
+    |> Enum.map(&normalize_issue_state/1)
+    |> Enum.with_index()
+    |> Map.new()
+  end
+
+  defp issue_state_dispatch_rank(state_name, active_state_order) when is_map(active_state_order) do
+    Map.get(active_state_order, normalize_issue_state(state_name), map_size(active_state_order))
   end
 
   defp priority_rank(priority) when is_integer(priority) and priority in 1..4, do: priority
