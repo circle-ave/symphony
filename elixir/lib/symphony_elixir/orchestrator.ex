@@ -1778,11 +1778,19 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp should_wake_released_resource_gate_retry?(retry_entry, now_ms) when is_map(retry_entry) do
     resource_gate_delay_type?(Map.get(retry_entry, :delay_type)) and
+      not retry_poll_backoff?(retry_entry) and
       retry_due_later_than?(retry_entry, now_ms, @resource_gate_released_retry_delay_ms) and
       resource_gate_released?(retry_entry)
   end
 
   defp should_wake_released_resource_gate_retry?(_retry_entry, _now_ms), do: false
+
+  defp retry_poll_backoff?(retry_entry) when is_map(retry_entry) do
+    case Map.get(retry_entry, :error) do
+      "retry poll failed:" <> _reason -> true
+      _error -> false
+    end
+  end
 
   defp retry_due_later_than?(retry_entry, now_ms, delay_ms) do
     case Map.get(retry_entry, :due_at_ms) do
