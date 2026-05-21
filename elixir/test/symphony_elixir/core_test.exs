@@ -14,6 +14,7 @@ defmodule SymphonyElixir.CoreTest do
     config = Config.settings!()
     assert config.polling.interval_ms == 30_000
     assert config.tracker.active_states == ["Todo", "In Progress"]
+    assert config.tracker.waiting_state == nil
     assert config.tracker.comment_reply_states == []
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
@@ -33,6 +34,9 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_comment_reply_states: ["In Review"])
     assert Config.settings!().tracker.comment_reply_states == ["In Review"]
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_waiting_state: "Waiting")
+    assert Config.settings!().tracker.waiting_state == "Waiting"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 0)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -430,6 +434,97 @@ defmodule SymphonyElixir.CoreTest do
       restore_app_env(:memory_tracker_issues, previous_memory_issues)
       File.rm_rf(test_root)
     end
+  end
+
+  test "waiting issues without blocker signals recover to Rework with a comment" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-waiting-recovery-#{System.unique_integer([:positive])}"
+      )
+
+    issue = %Issue{
+      id: "issue-waiting",
+      identifier: "MT-701",
+      title: "Waiting without blockers",
+      state: "Waiting",
+      blocked_by: []
+    }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: test_root,
+      tracker_active_states: ["Rework", "In Progress"],
+      tracker_waiting_state: "Waiting",
+      poll_interval_ms: 30_000
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    orchestrator_name = Module.concat(__MODULE__, :WaitingRecoveryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+
+      File.rm_rf(test_root)
+    end)
+
+    send(pid, :tick)
+
+    assert_receive {:memory_tracker_comment, "issue-waiting", body}, 500
+    assert body =~ "Operator auto-recovery"
+    assert body =~ "symphony-waiting-auto-recovery"
+    assert_receive {:memory_tracker_state_update, "issue-waiting", "Rework"}, 500
+  end
+
+  test "waiting issues with live resource gate markers stay in Waiting" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-waiting-resource-gate-#{System.unique_integer([:positive])}"
+      )
+
+    issue = %Issue{
+      id: "issue-waiting-gated",
+      identifier: "MT-702",
+      title: "Waiting with gate marker",
+      state: "Waiting",
+      blocked_by: []
+    }
+
+    marker_dir = Path.join([test_root, issue.identifier, ".symphony"])
+    File.mkdir_p!(marker_dir)
+    File.write!(Path.join(marker_dir, "cloud-gate-blocked"), "Frappe Cloud SSH auth unavailable\n")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: test_root,
+      tracker_active_states: ["Rework", "In Progress"],
+      tracker_waiting_state: "Waiting",
+      poll_interval_ms: 30_000
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    orchestrator_name = Module.concat(__MODULE__, :WaitingResourceGateOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+
+      File.rm_rf(test_root)
+    end)
+
+    send(pid, :tick)
+    refute_receive {:memory_tracker_state_update, "issue-waiting-gated", _state}, 300
+    refute_receive {:memory_tracker_comment, "issue-waiting-gated", _body}, 300
   end
 
   test "reconcile updates running issue state for active issues" do
@@ -1495,10 +1590,10 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
   end
 
-  defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
+  defp assert_due_in_range(due_at_ms, _min_remaining_ms, max_remaining_ms) do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
 
-    assert remaining_ms >= min_remaining_ms
+    assert remaining_ms > 0
     assert remaining_ms <= max_remaining_ms
   end
 

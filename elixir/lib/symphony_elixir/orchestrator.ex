@@ -21,6 +21,7 @@ defmodule SymphonyElixir.Orchestrator do
   }
   @comment_reply_reserved_slots 1
   @comment_reply_marker "<!-- symphony-comment-reply -->"
+  @waiting_auto_recovery_marker "<!-- symphony-waiting-auto-recovery -->"
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -284,6 +285,7 @@ defmodule SymphonyElixir.Orchestrator do
       |> reconcile_blocked_issues()
 
     with :ok <- Config.validate!(),
+         :ok <- maybe_recover_waiting_issues(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          {:ok, comment_reply_issues} <- fetch_comment_reply_issues() do
       state = bootstrap_comment_reply_seen(state, comment_reply_issues)
@@ -330,6 +332,128 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
         state
     end
+  end
+
+  defp maybe_recover_waiting_issues do
+    case configured_waiting_state() do
+      nil ->
+        :ok
+
+      waiting_state ->
+        case Tracker.fetch_issues_by_states([waiting_state]) do
+          {:ok, issues} ->
+            Enum.each(issues, &maybe_recover_waiting_issue/1)
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("Skipping Waiting recovery sweep; failed to fetch Waiting issues: #{inspect(reason)}")
+            :ok
+        end
+    end
+  end
+
+  defp configured_waiting_state do
+    case Config.settings!().tracker.waiting_state do
+      state when is_binary(state) ->
+        state = String.trim(state)
+        if state == "", do: nil, else: state
+
+      _ ->
+        nil
+    end
+  end
+
+  defp maybe_recover_waiting_issue(%Issue{} = issue) do
+    terminal_states = terminal_state_set()
+
+    cond do
+      issue_blocked_by_non_terminal?(issue, terminal_states) ->
+        :ok
+
+      waiting_issue_has_live_resource_gate?(issue) ->
+        :ok
+
+      true ->
+        recover_waiting_issue(issue)
+    end
+  end
+
+  defp maybe_recover_waiting_issue(_issue), do: :ok
+
+  defp issue_blocked_by_non_terminal?(%Issue{blocked_by: blockers}, terminal_states) when is_list(blockers) do
+    Enum.any?(blockers, fn
+      %{state: blocker_state} when is_binary(blocker_state) ->
+        !terminal_issue_state?(blocker_state, terminal_states)
+
+      _ ->
+        true
+    end)
+  end
+
+  defp issue_blocked_by_non_terminal?(_issue, _terminal_states), do: false
+
+  defp waiting_issue_has_live_resource_gate?(%Issue{identifier: identifier}) when is_binary(identifier) do
+    workspace_path =
+      Config.settings!().workspace.root
+      |> Path.expand()
+      |> Path.join(identifier)
+
+    Enum.any?(@resource_gate_markers, fn {delay_type, marker_name} ->
+      marker_path = Path.join(workspace_path, marker_name)
+      File.exists?(marker_path) and not marker_resource_gate_released?(delay_type, marker_path)
+    end)
+  end
+
+  defp waiting_issue_has_live_resource_gate?(_issue), do: false
+
+  defp recover_waiting_issue(%Issue{id: issue_id, identifier: identifier} = issue)
+       when is_binary(issue_id) do
+    case waiting_recovery_state() do
+      nil ->
+        Logger.warning("Skipping Waiting recovery for #{issue_context(issue)}; no active recovery state is configured")
+        :ok
+
+      recovery_state ->
+        with :ok <- ensure_waiting_recovery_comment(issue, recovery_state),
+             :ok <- Tracker.update_issue_state(issue_id, recovery_state) do
+          Logger.info("Recovered unblocked Waiting issue: issue_id=#{issue_id} issue_identifier=#{identifier} state=#{recovery_state}")
+        else
+          {:error, reason} ->
+            Logger.warning("Waiting recovery failed for #{issue_context(issue)}: #{inspect(reason)}")
+        end
+    end
+  end
+
+  defp recover_waiting_issue(_issue), do: :ok
+
+  defp waiting_recovery_state do
+    active_states = Config.settings!().tracker.active_states
+
+    Enum.find(active_states, &(normalize_issue_state(&1) == "rework")) || List.first(active_states)
+  end
+
+  defp ensure_waiting_recovery_comment(%Issue{id: issue_id} = issue, recovery_state) when is_binary(issue_id) do
+    if waiting_auto_recovery_comment_present?(issue) do
+      :ok
+    else
+      Tracker.create_comment(issue_id, waiting_recovery_comment_body(recovery_state))
+    end
+  end
+
+  defp ensure_waiting_recovery_comment(_issue, _recovery_state), do: :ok
+
+  defp waiting_auto_recovery_comment_present?(%Issue{latest_comment_body: body}) when is_binary(body) do
+    String.contains?(body, @waiting_auto_recovery_marker)
+  end
+
+  defp waiting_auto_recovery_comment_present?(_issue), do: false
+
+  defp waiting_recovery_comment_body(recovery_state) do
+    """
+    Operator auto-recovery: `Waiting` has no live Linear blocker relation and no live `.symphony/cloud-gate-blocked` or `.symphony/local-bench-gate-blocked` marker in the workspace, so Symphony is returning this issue to `#{recovery_state}` to continue.
+    #{@waiting_auto_recovery_marker}
+    """
+    |> String.trim()
   end
 
   defp reconcile_running_issues(%State{} = state) do
@@ -1109,18 +1233,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp issue_routable_to_worker?(_issue), do: true
 
   defp todo_issue_blocked_by_non_terminal?(
-         %Issue{state: issue_state, blocked_by: blockers},
+         %Issue{state: issue_state} = issue,
          terminal_states
        )
-       when is_binary(issue_state) and is_list(blockers) do
+       when is_binary(issue_state) do
     normalize_issue_state(issue_state) == "todo" and
-      Enum.any?(blockers, fn
-        %{state: blocker_state} when is_binary(blocker_state) ->
-          !terminal_issue_state?(blocker_state, terminal_states)
-
-        _ ->
-          true
-      end)
+      issue_blocked_by_non_terminal?(issue, terminal_states)
   end
 
   defp todo_issue_blocked_by_non_terminal?(_issue, _terminal_states), do: false
