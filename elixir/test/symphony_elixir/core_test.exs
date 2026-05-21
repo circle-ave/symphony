@@ -527,6 +527,58 @@ defmodule SymphonyElixir.CoreTest do
     refute_receive {:memory_tracker_comment, "issue-waiting-gated", _body}, 300
   end
 
+  test "active issues with live resource gate markers park before dispatch" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-active-resource-gate-#{System.unique_integer([:positive])}"
+      )
+
+    issue = %Issue{
+      id: "issue-active-gated",
+      identifier: "MT-703",
+      title: "Active with gate marker",
+      state: "Rework",
+      blocked_by: []
+    }
+
+    marker_dir = Path.join([test_root, issue.identifier, ".symphony"])
+    File.mkdir_p!(marker_dir)
+    File.write!(Path.join(marker_dir, "cloud-gate-blocked"), "Frappe Cloud SSH auth unavailable\n")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: test_root,
+      tracker_active_states: ["Rework", "In Progress"],
+      tracker_waiting_state: "Waiting",
+      cloud_gate_retry_cooldown_ms: 60_000,
+      poll_interval_ms: 30_000
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    orchestrator_name = Module.concat(__MODULE__, :ActiveResourceGateOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+
+      File.rm_rf(test_root)
+    end)
+
+    send(pid, :tick)
+    Process.sleep(100)
+
+    state = :sys.get_state(pid)
+    assert state.running == %{}
+    assert MapSet.member?(state.claimed, issue.id)
+    assert %{delay_type: :cloud_gate, workspace_path: workspace_path} = state.retry_attempts[issue.id]
+    assert workspace_path == Path.join(test_root, issue.identifier)
+  end
+
   test "reconcile updates running issue state for active issues" do
     issue_id = "issue-3"
 
