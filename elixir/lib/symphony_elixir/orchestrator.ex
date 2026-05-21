@@ -370,7 +370,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_blocked_by_non_terminal?(issue, terminal_states) ->
         :ok
 
-      waiting_issue_has_live_resource_gate?(issue) ->
+      waiting_issue_has_resource_gate_marker?(issue) ->
         :ok
 
       true ->
@@ -392,11 +392,15 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp issue_blocked_by_non_terminal?(_issue, _terminal_states), do: false
 
-  defp waiting_issue_has_live_resource_gate?(%Issue{identifier: identifier}) when is_binary(identifier) do
-    live_resource_gate_for_issue(identifier) != nil
+  defp waiting_issue_has_resource_gate_marker?(%Issue{identifier: identifier}) when is_binary(identifier) do
+    workspace_path = issue_workspace_path(identifier)
+
+    Enum.any?(@resource_gate_markers, fn {_delay_type, marker_name} ->
+      File.exists?(Path.join(workspace_path, marker_name))
+    end)
   end
 
-  defp waiting_issue_has_live_resource_gate?(_issue), do: false
+  defp waiting_issue_has_resource_gate_marker?(_issue), do: false
 
   defp recover_waiting_issue(%Issue{id: issue_id, identifier: identifier} = issue)
        when is_binary(issue_id) do
