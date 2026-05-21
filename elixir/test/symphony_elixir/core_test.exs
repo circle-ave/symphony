@@ -1218,6 +1218,45 @@ defmodule SymphonyElixir.CoreTest do
     Process.cancel_timer(retry.timer_ref)
   end
 
+  test "released cloud gate retries preserve retry poll backoff" do
+    workspace = Path.join(System.tmp_dir!(), "symphony-cloud-gate-poll-backoff-#{System.unique_integer([:positive])}")
+    lock_dir = Path.join(System.tmp_dir!(), "symphony-cloud-gate-lock-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+    File.write!(
+      Path.join([workspace, ".symphony", "cloud-gate-blocked"]),
+      "lock=#{lock_dir}\n"
+    )
+
+    on_exit(fn -> File.rm_rf(workspace) end)
+
+    stale_timer_ref = Process.send_after(self(), :stale_cloud_retry, 60_000)
+    stale_retry_token = make_ref()
+
+    state = %Orchestrator.State{
+      retry_attempts: %{
+        "issue-cloud-gate" => %{
+          attempt: 1,
+          timer_ref: stale_timer_ref,
+          retry_token: stale_retry_token,
+          due_at_ms: System.monotonic_time(:millisecond) + 60_000,
+          identifier: "MT-577",
+          delay_type: :cloud_gate,
+          error: "retry poll failed: {:linear_api_status, 400}",
+          workspace_path: workspace
+        }
+      }
+    }
+
+    state = Orchestrator.wake_released_resource_gate_retries_for_test(state)
+    retry = state.retry_attempts["issue-cloud-gate"]
+
+    assert retry.timer_ref == stale_timer_ref
+    assert retry.retry_token == stale_retry_token
+
+    Process.cancel_timer(stale_timer_ref)
+  end
+
   test "resource-gated retry remains parked while its gate lock is live" do
     workspace = Path.join(System.tmp_dir!(), "symphony-cloud-gate-park-#{System.unique_integer([:positive])}")
     lock_dir = Path.join(System.tmp_dir!(), "symphony-cloud-gate-lock-#{System.unique_integer([:positive])}")
