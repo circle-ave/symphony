@@ -393,15 +393,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp issue_blocked_by_non_terminal?(_issue, _terminal_states), do: false
 
   defp waiting_issue_has_live_resource_gate?(%Issue{identifier: identifier}) when is_binary(identifier) do
-    workspace_path =
-      Config.settings!().workspace.root
-      |> Path.expand()
-      |> Path.join(identifier)
-
-    Enum.any?(@resource_gate_markers, fn {delay_type, marker_name} ->
-      marker_path = Path.join(workspace_path, marker_name)
-      File.exists?(marker_path) and not marker_resource_gate_released?(delay_type, marker_path)
-    end)
+    live_resource_gate_for_issue(identifier) != nil
   end
 
   defp waiting_issue_has_live_resource_gate?(_issue), do: false
@@ -454,6 +446,62 @@ defmodule SymphonyElixir.Orchestrator do
     #{@waiting_auto_recovery_marker}
     """
     |> String.trim()
+  end
+
+  defp should_park_resource_gated_issue?(
+         %Issue{id: issue_id} = issue,
+         %State{running: running, claimed: claimed, blocked: blocked},
+         active_states,
+         terminal_states
+       )
+       when is_binary(issue_id) do
+    candidate_issue?(issue, active_states, terminal_states) and
+      !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
+      !MapSet.member?(claimed, issue_id) and
+      !Map.has_key?(running, issue_id) and
+      !Map.has_key?(blocked, issue_id) and
+      live_resource_gate_for_issue(issue.identifier) != nil
+  end
+
+  defp should_park_resource_gated_issue?(_issue, _state, _active_states, _terminal_states), do: false
+
+  defp park_resource_gated_issue(%State{} = state, %Issue{id: issue_id, identifier: identifier})
+       when is_binary(issue_id) and is_binary(identifier) do
+    {delay_type, marker_path, workspace_path} = live_resource_gate_for_issue(identifier)
+
+    Logger.info("Parking resource-gated issue before dispatch: issue_id=#{issue_id} issue_identifier=#{identifier} delay_type=#{delay_type} marker_path=#{marker_path}")
+
+    state =
+      schedule_issue_retry(state, issue_id, 1, %{
+        identifier: identifier,
+        delay_type: delay_type,
+        error: resource_gate_error(delay_type),
+        workspace_path: workspace_path
+      })
+
+    %{state | claimed: MapSet.put(state.claimed, issue_id)}
+  end
+
+  defp park_resource_gated_issue(state, _issue), do: state
+
+  defp live_resource_gate_for_issue(identifier) when is_binary(identifier) do
+    workspace_path = issue_workspace_path(identifier)
+
+    Enum.find_value(@resource_gate_markers, fn {delay_type, marker_name} ->
+      marker_path = Path.join(workspace_path, marker_name)
+
+      if File.exists?(marker_path) and not marker_resource_gate_released?(delay_type, marker_path) do
+        {delay_type, marker_path, workspace_path}
+      end
+    end)
+  end
+
+  defp live_resource_gate_for_issue(_identifier), do: nil
+
+  defp issue_workspace_path(identifier) do
+    Config.settings!().workspace.root
+    |> Path.expand()
+    |> Path.join(identifier)
   end
 
   defp reconcile_running_issues(%State{} = state) do
@@ -987,10 +1035,15 @@ defmodule SymphonyElixir.Orchestrator do
     issues
     |> sort_issues_for_dispatch()
     |> Enum.reduce(state, fn issue, state_acc ->
-      if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
-        dispatch_issue(state_acc, issue)
-      else
-        state_acc
+      cond do
+        should_park_resource_gated_issue?(issue, state_acc, active_states, terminal_states) ->
+          park_resource_gated_issue(state_acc, issue)
+
+        should_dispatch_issue?(issue, state_acc, active_states, terminal_states) ->
+          dispatch_issue(state_acc, issue)
+
+        true ->
+          state_acc
       end
     end)
   end
