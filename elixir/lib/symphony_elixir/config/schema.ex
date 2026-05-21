@@ -56,6 +56,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:assignee, :string)
       field(:required_labels, {:array, :string}, default: [])
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
+      field(:waiting_state, :string)
       field(:comment_reply_states, {:array, :string}, default: [])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
@@ -77,6 +78,7 @@ defmodule SymphonyElixir.Config.Schema do
           :assignee,
           :required_labels,
           :active_states,
+          :waiting_state,
           :comment_reply_states,
           :terminal_states
         ],
