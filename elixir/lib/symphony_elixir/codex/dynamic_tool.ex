@@ -328,6 +328,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       proof_value(proof, "pullRequestMerged") != true ->
         missing_proof_field(proof, "pullRequestMerged")
 
+      proof_value(proof, "cloudContainsMergedPr") != true ->
+        missing_proof_field(proof, "cloudContainsMergedPr")
+
       proof_review_branch(proof) != "main" ->
         review_transition_error("Blocked review transition: readiness proof did not review main.", %{
           "path" => proof["_path"],
@@ -339,6 +342,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
       proof_value(proof, "deliverableReviewPassed") != true ->
         missing_proof_field(proof, "deliverableReviewPassed")
+
+      proof_user_facing?(proof) and proof_value(proof, "screenshotArtifactVerified") != true ->
+        missing_proof_field(proof, "screenshotArtifactVerified")
 
       true ->
         validate_review_ready_head(proof, workspace, opts)
@@ -376,6 +382,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp proof_review_branch(proof) do
     proof_value(proof, "reviewBranch") || proof_value(proof, "expectedBranch")
   end
+
+  defp proof_user_facing?(proof), do: proof_value(proof, "userFacing") != false
 
   defp workspace_head(workspace, opts) do
     case Keyword.fetch(opts, :git_head) do

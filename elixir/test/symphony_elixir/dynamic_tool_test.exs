@@ -209,9 +209,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
+        "cloudContainsMergedPr" => true,
         "reviewBranch" => "main",
         "liveValidationPassed" => true,
-        "deliverableReviewPassed" => true
+        "deliverableReviewPassed" => true,
+        "screenshotArtifactVerified" => true
       })
 
       response =
@@ -250,9 +252,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
+        "cloudContainsMergedPr" => true,
         "reviewBranch" => "dillon/cir-1-feature",
         "liveValidationPassed" => true,
-        "deliverableReviewPassed" => true
+        "deliverableReviewPassed" => true,
+        "screenshotArtifactVerified" => true
       })
 
       response =
