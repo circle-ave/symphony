@@ -206,6 +206,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "issue" => "CIR-1",
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
+        "workpadCompleted" => true,
         "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
@@ -249,6 +250,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "issue" => "CIR-1",
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
+        "workpadCompleted" => true,
         "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
@@ -280,6 +282,52 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       assert Jason.decode!(response["output"])["error"]["message"] ==
                "Blocked review transition: readiness proof did not review main."
+
+      assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
+      refute_received {:linear_client_called, :state_update, _variables}
+    end)
+  end
+
+  test "linear_graphql blocks guarded review updates when readiness proof lacks completed workpad proof" do
+    test_pid = self()
+
+    with_guarded_workspace(fn workspace ->
+      write_review_ready_proof!(workspace, %{
+        "schema" => "symphony.review-ready.v1",
+        "issue" => "CIR-1",
+        "workspaceHead" => "head-123",
+        "reviewReadinessCheckPassed" => true,
+        "frappeCloudDeployed" => true,
+        "mainBranchReviewed" => true,
+        "pullRequestMerged" => true,
+        "cloudContainsMergedPr" => true,
+        "reviewBranch" => "main",
+        "liveValidationPassed" => true,
+        "deliverableReviewPassed" => true,
+        "screenshotArtifactVerified" => true
+      })
+
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          git_head: "head-123",
+          linear_client: review_state_guard_client(test_pid, "In Review")
+        )
+
+      assert response["success"] == false
+
+      assert Jason.decode!(response["output"])["error"]["message"] ==
+               "Blocked review transition: readiness proof is missing a passing workpadCompleted flag."
 
       assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
       refute_received {:linear_client_called, :state_update, _variables}
