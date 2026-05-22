@@ -527,11 +527,17 @@ defmodule SymphonyElixir.CoreTest do
     refute_receive {:memory_tracker_comment, "issue-waiting-gated", _body}, 300
   end
 
-  test "active issues with live resource gate markers park before dispatch" do
+  test "active issues with live resource gate locks park before dispatch" do
     test_root =
       Path.join(
         System.tmp_dir!(),
         "symphony-elixir-active-resource-gate-#{System.unique_integer([:positive])}"
+      )
+
+    lock_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-active-resource-lock-#{System.unique_integer([:positive])}"
       )
 
     issue = %Issue{
@@ -544,7 +550,8 @@ defmodule SymphonyElixir.CoreTest do
 
     marker_dir = Path.join([test_root, issue.identifier, ".symphony"])
     File.mkdir_p!(marker_dir)
-    File.write!(Path.join(marker_dir, "cloud-gate-blocked"), "Frappe Cloud SSH auth unavailable\n")
+    File.mkdir_p!(lock_dir)
+    File.write!(Path.join(marker_dir, "cloud-gate-blocked"), "lock=#{lock_dir}\n")
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
@@ -567,6 +574,7 @@ defmodule SymphonyElixir.CoreTest do
       end
 
       File.rm_rf(test_root)
+      File.rm_rf(lock_dir)
     end)
 
     send(pid, :tick)
@@ -577,6 +585,25 @@ defmodule SymphonyElixir.CoreTest do
     assert MapSet.member?(state.claimed, issue.id)
     assert %{delay_type: :cloud_gate, workspace_path: workspace_path} = state.retry_attempts[issue.id]
     assert workspace_path == Path.join(test_root, issue.identifier)
+  end
+
+  test "active issues with opaque resource markers remain dispatchable" do
+    workspace =
+      Path.join(System.tmp_dir!(), "symphony-cloud-gate-opaque-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Path.join([workspace, ".symphony", "cloud-gate-blocked"]),
+      "Frappe Cloud deploy-state blocker; no live lock or async job is present\n"
+    )
+
+    on_exit(fn -> File.rm_rf(workspace) end)
+
+    refute Orchestrator.resource_gate_retry_still_blocked_for_test?(%{
+             delay_type: :cloud_gate,
+             workspace_path: workspace
+           })
   end
 
   test "reconcile updates running issue state for active issues" do
@@ -1347,6 +1374,7 @@ defmodule SymphonyElixir.CoreTest do
     lock_dir = Path.join(System.tmp_dir!(), "symphony-cloud-gate-lock-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(Path.join(workspace, ".symphony"))
+
     File.write!(
       Path.join([workspace, ".symphony", "cloud-gate-blocked"]),
       "lock=#{lock_dir}\n"

@@ -497,7 +497,7 @@ defmodule SymphonyElixir.Orchestrator do
     Enum.find_value(@resource_gate_markers, fn {delay_type, marker_name} ->
       marker_path = Path.join(workspace_path, marker_name)
 
-      if File.exists?(marker_path) and not marker_resource_gate_released?(delay_type, marker_path) do
+      if File.exists?(marker_path) and marker_resource_gate_busy?(delay_type, marker_path) do
         {delay_type, marker_path, workspace_path}
       end
     end)
@@ -1736,7 +1736,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       true ->
         marker_path = Path.join(workspace_path, Map.fetch!(@resource_gate_markers, delay_type))
-        File.exists?(marker_path) and not marker_resource_gate_released?(delay_type, marker_path)
+        File.exists?(marker_path) and marker_resource_gate_busy?(delay_type, marker_path)
     end
   end
 
@@ -1814,24 +1814,21 @@ defmodule SymphonyElixir.Orchestrator do
         marker_path = Path.join(workspace_path, Map.fetch!(@resource_gate_markers, delay_type))
 
         if File.exists?(marker_path) do
-          marker_resource_gate_released?(delay_type, marker_path)
+          not marker_resource_gate_busy?(delay_type, marker_path)
         else
           true
         end
     end
   end
 
-  defp marker_resource_gate_released?(:cloud_gate, marker_path) do
+  defp marker_resource_gate_busy?(:cloud_gate, marker_path) do
     with {:ok, marker} <- File.read(marker_path) do
       cond do
         marker_resource_job_running?(marker) ->
-          false
-
-        marker_resource_job_present?(marker) ->
           true
 
         lock_path = marker_value(marker, "lock") ->
-          !File.exists?(lock_path)
+          File.exists?(lock_path)
 
         true ->
           false
@@ -1841,7 +1838,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp marker_resource_gate_released?(:local_bench_gate, marker_path) do
+  defp marker_resource_gate_busy?(:local_bench_gate, marker_path) do
     with {:ok, marker} <- File.read(marker_path),
          false <- marker_resource_job_running?(marker),
          base when is_binary(base) and base != "" <- marker_value(marker, "base") do
@@ -1851,10 +1848,11 @@ defmodule SymphonyElixir.Orchestrator do
         |> parse_positive_integer(1)
 
       1..size
-      |> Enum.any?(fn slot ->
-        not File.exists?(local_bench_lock_path(slot, base))
+      |> Enum.all?(fn slot ->
+        File.exists?(local_bench_lock_path(slot, base))
       end)
     else
+      true -> true
       _ -> false
     end
   end
@@ -1872,13 +1870,6 @@ defmodule SymphonyElixir.Orchestrator do
 
       _ ->
         false
-    end
-  end
-
-  defp marker_resource_job_present?(marker) when is_binary(marker) do
-    case marker_value(marker, "status_path") || marker_value(marker, "job_status_path") do
-      status_path when is_binary(status_path) and status_path != "" -> true
-      _ -> false
     end
   end
 
@@ -2086,7 +2077,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     %{
       gate: Atom.to_string(delay_type),
-      blocked: not marker_resource_gate_released?(delay_type, marker_path),
+      blocked: marker_resource_gate_busy?(delay_type, marker_path),
       marker_path: marker_path,
       lock_path: marker && marker_value(marker, "lock"),
       job_id: marker && marker_value(marker, "job_id"),
