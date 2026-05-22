@@ -499,6 +499,62 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert log =~ "Variable \\\"$ids\\\" got invalid value"
   end
 
+  test "linear client honors graphql rate limit cooldown responses" do
+    Client.clear_rate_limit_cooldown_for_test()
+    on_exit(fn -> Client.clear_rate_limit_cooldown_for_test() end)
+
+    parent = self()
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, {:linear_rate_limited, 120_000}} =
+                 Client.graphql(
+                   "query Viewer { viewer { id } }",
+                   %{},
+                   request_fun: fn _payload, _headers ->
+                     send(parent, :rate_limit_request)
+
+                     {:ok,
+                      %{
+                        status: 400,
+                        body: %{
+                          "errors" => [
+                            %{
+                              "message" => "Rate limit exceeded",
+                              "extensions" => %{
+                                "code" => "RATELIMITED",
+                                "statusCode" => 429,
+                                "meta" => %{
+                                  "rateLimitResult" => %{
+                                    "duration" => 120_000
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }}
+                   end
+                 )
+
+        assert {:error, {:linear_rate_limited, remaining_ms}} =
+                 Client.graphql(
+                   "query Viewer { viewer { id } }",
+                   %{},
+                   request_fun: fn _payload, _headers ->
+                     send(parent, :unexpected_linear_request)
+                     {:ok, %{status: 200, body: %{}}}
+                   end
+                 )
+
+        assert remaining_ms > 0
+      end)
+
+    assert_received :rate_limit_request
+    refute_received :unexpected_linear_request
+    assert log =~ "Linear GraphQL rate limit active retry_in_ms=120000"
+  end
+
   test "orchestrator sorts dispatch by priority then oldest created_at" do
     issue_same_priority_older = %Issue{
       id: "issue-old-high",
