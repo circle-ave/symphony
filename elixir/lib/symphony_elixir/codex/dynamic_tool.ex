@@ -25,6 +25,28 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     }
   }
+  @review_state_names MapSet.new(["human review", "in review", "review"])
+  @review_ready_file Path.join([".symphony", "review-ready.json"])
+  @review_blocker_files [
+    Path.join([".symphony", "cloud-gate-blocked"]),
+    Path.join([".symphony", "local-bench-gate-blocked"])
+  ]
+  @review_state_guard_query """
+  query SymphonyReviewStateGuard($issueId: String!) {
+    issue(id: $issueId) {
+      id
+      identifier
+      team {
+        states {
+          nodes {
+            id
+            name
+          }
+        }
+      }
+    }
+  }
+  """
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
@@ -57,6 +79,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
 
     with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
+         :ok <- authorize_linear_graphql(query, variables, opts, linear_client),
          {:ok, response} <- linear_client.(query, variables, []) do
       graphql_response(response)
     else
@@ -89,6 +112,302 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp normalize_linear_graphql_arguments(_arguments), do: {:error, :invalid_arguments}
+
+  defp authorize_linear_graphql(query, variables, opts, linear_client) do
+    if review_guard_required?(opts) and issue_state_update_query?(query) do
+      with {:ok, issue_id, state_id} <- issue_state_update_ids(query, variables),
+           {:ok, target} <- fetch_target_state(linear_client, issue_id, state_id) do
+        if review_state?(target.state_name) do
+          verify_review_ready(opts, target)
+        else
+          :ok
+        end
+      end
+    else
+      :ok
+    end
+  end
+
+  defp review_guard_required?(opts) do
+    case Keyword.get(opts, :workspace) do
+      workspace when is_binary(workspace) ->
+        File.exists?(Path.join(workspace, ".symphony/review-ready-required")) or
+          File.exists?(Path.join(workspace, "scripts/review_readiness_check.mjs"))
+
+      _ ->
+        false
+    end
+  end
+
+  defp issue_state_update_query?(query) do
+    String.contains?(query, "issueUpdate") and String.contains?(query, "stateId")
+  end
+
+  defp issue_state_update_ids(query, variables) do
+    issue_id =
+      variable_value(variables, [["issueId"], ["issue_id"], ["id"], ["input", "id"]]) ||
+        inline_value(query, ~r/issueUpdate\s*\(\s*id\s*:\s*"([^"]+)"/)
+
+    state_id =
+      variable_value(variables, [["stateId"], ["state_id"], ["input", "stateId"], ["input", "state_id"]]) ||
+        inline_value(query, ~r/stateId\s*:\s*"([^"]+)"/)
+
+    cond do
+      is_nil(issue_id) or String.trim(to_string(issue_id)) == "" ->
+        review_transition_error("Blocked Linear state update: Symphony could not identify the target issue for review gating.", %{
+          "missing" => "issue id"
+        })
+
+      is_nil(state_id) or String.trim(to_string(state_id)) == "" ->
+        review_transition_error("Blocked Linear state update: Symphony could not identify the target state for review gating.", %{
+          "missing" => "state id"
+        })
+
+      true ->
+        {:ok, to_string(issue_id), to_string(state_id)}
+    end
+  end
+
+  defp variable_value(variables, paths) do
+    Enum.find_value(paths, fn path ->
+      nested_value(variables, path)
+    end)
+  end
+
+  defp nested_value(value, []), do: value
+
+  defp nested_value(value, [key | rest]) when is_map(value) do
+    case map_value(value, key) do
+      nil -> nil
+      next -> nested_value(next, rest)
+    end
+  end
+
+  defp nested_value(_value, _path), do: nil
+
+  defp map_value(map, key) when is_map(map) and is_binary(key) do
+    atom_key = String.to_atom(key)
+
+    cond do
+      Map.has_key?(map, key) -> Map.get(map, key)
+      Map.has_key?(map, atom_key) -> Map.get(map, atom_key)
+      true -> nil
+    end
+  end
+
+  defp inline_value(query, regex) do
+    case Regex.run(regex, query) do
+      [_, value] -> value
+      _ -> nil
+    end
+  end
+
+  defp fetch_target_state(linear_client, issue_id, state_id) do
+    case linear_client.(@review_state_guard_query, %{"issueId" => issue_id}, []) do
+      {:ok, response} ->
+        issue = payload_value(response, ["data", "issue"])
+        states = payload_value(issue, ["team", "states", "nodes"]) || []
+
+        state =
+          Enum.find(states, fn candidate ->
+            payload_value(candidate, ["id"]) == state_id
+          end)
+
+        if is_map(issue) and is_map(state) do
+          {:ok,
+           %{
+             issue_id: payload_value(issue, ["id"]),
+             issue_identifier: payload_value(issue, ["identifier"]),
+             state_id: state_id,
+             state_name: payload_value(state, ["name"])
+           }}
+        else
+          review_transition_error("Blocked Linear state update: Symphony could not verify the target Linear state.", %{
+            "issueId" => issue_id,
+            "stateId" => state_id
+          })
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp payload_value(value, path), do: nested_value(value, path)
+
+  defp review_state?(state_name) when is_binary(state_name) do
+    MapSet.member?(@review_state_names, String.downcase(String.trim(state_name)))
+  end
+
+  defp review_state?(_state_name), do: false
+
+  defp verify_review_ready(opts, target) do
+    workspace = Keyword.get(opts, :workspace)
+    issue = Keyword.get(opts, :issue)
+
+    with :ok <- verify_workspace_for_review(workspace),
+         :ok <- ensure_no_review_blockers(workspace),
+         {:ok, proof} <- read_review_ready_proof(workspace),
+         :ok <- validate_review_ready_proof(proof, workspace, issue, target, opts) do
+      :ok
+    end
+  end
+
+  defp verify_workspace_for_review(workspace) when is_binary(workspace), do: :ok
+
+  defp verify_workspace_for_review(_workspace) do
+    review_transition_error("Blocked review transition: no workspace context was available for readiness verification.", %{})
+  end
+
+  defp ensure_no_review_blockers(workspace) do
+    blockers =
+      @review_blocker_files
+      |> Enum.map(&Path.join(workspace, &1))
+      |> Enum.filter(&File.exists?/1)
+
+    if blockers == [] do
+      :ok
+    else
+      review_transition_error("Blocked review transition: a live gate blocker marker is still present.", %{
+        "blockers" => blockers
+      })
+    end
+  end
+
+  defp read_review_ready_proof(workspace) do
+    marker_path = Path.join(workspace, @review_ready_file)
+
+    case File.read(marker_path) do
+      {:ok, body} ->
+        case Jason.decode(body) do
+          {:ok, proof} when is_map(proof) ->
+            {:ok, Map.put(proof, "_path", marker_path)}
+
+          _ ->
+            review_transition_error("Blocked review transition: readiness proof is not valid JSON.", %{
+              "path" => marker_path
+            })
+        end
+
+      {:error, _reason} ->
+        review_transition_error("Blocked review transition: missing review readiness proof.", %{
+          "path" => marker_path,
+          "requiredCommand" => "Run scripts/review_readiness_check.mjs after Frappe Cloud deploy/live validation; it writes this file on pass."
+        })
+    end
+  end
+
+  defp validate_review_ready_proof(proof, workspace, issue, target, opts) do
+    expected_issue =
+      issue_identifier(issue) ||
+        target.issue_identifier ||
+        target.issue_id
+
+    cond do
+      proof_value(proof, "schema") != "symphony.review-ready.v1" ->
+        review_transition_error("Blocked review transition: readiness proof has an unsupported schema.", %{
+          "path" => proof["_path"]
+        })
+
+      proof_value(proof, "issue") not in Enum.reject([expected_issue, target.issue_identifier, target.issue_id], &is_nil/1) ->
+        review_transition_error("Blocked review transition: readiness proof belongs to a different issue.", %{
+          "path" => proof["_path"],
+          "proofIssue" => proof_value(proof, "issue"),
+          "expectedIssue" => expected_issue
+        })
+
+      proof_value(proof, "reviewReadinessCheckPassed") != true ->
+        missing_proof_field(proof, "reviewReadinessCheckPassed")
+
+      proof_value(proof, "frappeCloudDeployed") != true ->
+        missing_proof_field(proof, "frappeCloudDeployed")
+
+      proof_value(proof, "mainBranchReviewed") != true ->
+        missing_proof_field(proof, "mainBranchReviewed")
+
+      proof_value(proof, "pullRequestMerged") != true ->
+        missing_proof_field(proof, "pullRequestMerged")
+
+      proof_review_branch(proof) != "main" ->
+        review_transition_error("Blocked review transition: readiness proof did not review main.", %{
+          "path" => proof["_path"],
+          "reviewBranch" => proof_review_branch(proof)
+        })
+
+      proof_value(proof, "liveValidationPassed") != true ->
+        missing_proof_field(proof, "liveValidationPassed")
+
+      proof_value(proof, "deliverableReviewPassed") != true ->
+        missing_proof_field(proof, "deliverableReviewPassed")
+
+      true ->
+        validate_review_ready_head(proof, workspace, opts)
+    end
+  end
+
+  defp validate_review_ready_head(proof, workspace, opts) do
+    case workspace_head(workspace, opts) do
+      {:ok, head} ->
+        if proof_value(proof, "workspaceHead") == head do
+          :ok
+        else
+          review_transition_error("Blocked review transition: readiness proof does not match the current workspace HEAD.", %{
+            "path" => proof["_path"],
+            "proofHead" => proof_value(proof, "workspaceHead"),
+            "currentHead" => head
+          })
+        end
+
+      {:error, reason} ->
+        review_transition_error("Blocked review transition: could not verify current workspace HEAD.", %{
+          "path" => proof["_path"],
+          "reason" => inspect(reason)
+        })
+    end
+  end
+
+  defp issue_identifier(%{identifier: identifier}) when is_binary(identifier) and identifier != "", do: identifier
+  defp issue_identifier(_issue), do: nil
+
+  defp proof_value(proof, key) do
+    map_value(proof, key) || map_value(proof, Macro.underscore(key))
+  end
+
+  defp proof_review_branch(proof) do
+    proof_value(proof, "reviewBranch") || proof_value(proof, "expectedBranch")
+  end
+
+  defp workspace_head(workspace, opts) do
+    case Keyword.fetch(opts, :git_head) do
+      {:ok, head} when is_binary(head) and head != "" ->
+        {:ok, head}
+
+      _ ->
+        workspace_head(workspace)
+    end
+  end
+
+  defp workspace_head(workspace) when is_binary(workspace) do
+    case System.cmd("git", ["rev-parse", "HEAD"], cd: workspace, stderr_to_stdout: true) do
+      {head, 0} -> {:ok, String.trim(head)}
+      {output, status} -> {:error, {:git_rev_parse_failed, status, String.trim(output)}}
+    end
+  rescue
+    error -> {:error, error}
+  end
+
+  defp workspace_head(_workspace), do: {:error, :missing_workspace}
+
+  defp missing_proof_field(proof, field) do
+    review_transition_error("Blocked review transition: readiness proof is missing a passing #{field} flag.", %{
+      "path" => proof["_path"],
+      "field" => field
+    })
+  end
+
+  defp review_transition_error(message, details) do
+    {:error, {:review_transition_blocked, message, details}}
+  end
 
   defp normalize_query(arguments) do
     case Map.get(arguments, "query") || Map.get(arguments, :query) do
@@ -190,6 +509,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "error" => %{
         "message" => "Linear GraphQL request failed before receiving a successful response.",
         "reason" => inspect(reason)
+      }
+    }
+  end
+
+  defp tool_error_payload({:review_transition_blocked, message, details}) do
+    %{
+      "error" => %{
+        "message" => message,
+        "details" => details
       }
     }
   end
