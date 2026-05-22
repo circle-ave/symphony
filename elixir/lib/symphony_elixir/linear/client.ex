@@ -9,6 +9,8 @@ defmodule SymphonyElixir.Linear.Client do
   @issue_page_size 50
   @max_error_body_log_bytes 1_000
   @comment_reply_marker "<!-- symphony-comment-reply -->"
+  @rate_limit_cooldown_key {__MODULE__, :rate_limit_cooldown_until_ms}
+  @default_rate_limit_cooldown_ms 60_000
 
   @query """
   query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
@@ -191,22 +193,51 @@ defmodule SymphonyElixir.Linear.Client do
     payload = build_graphql_payload(query, variables, Keyword.get(opts, :operation_name))
     request_fun = Keyword.get(opts, :request_fun, &post_graphql_request/2)
 
-    with {:ok, headers} <- graphql_headers(),
-         {:ok, %{status: 200, body: body}} <- request_fun.(payload, headers) do
-      {:ok, body}
-    else
-      {:ok, response} ->
-        Logger.error(
-          "Linear GraphQL request failed status=#{response.status}" <>
-            linear_error_context(payload, response)
-        )
+    case rate_limit_cooldown_remaining_ms() do
+      remaining_ms when remaining_ms > 0 ->
+        {:error, {:linear_rate_limited, remaining_ms}}
 
-        {:error, {:linear_api_status, response.status}}
+      _ ->
+        with {:ok, headers} <- graphql_headers(),
+             {:ok, %{status: 200, body: body}} <- request_fun.(payload, headers) do
+          {:ok, body}
+        else
+          {:ok, response} ->
+            case linear_rate_limit_retry_ms(response) do
+              retry_ms when is_integer(retry_ms) and retry_ms > 0 ->
+                set_rate_limit_cooldown(retry_ms)
 
-      {:error, reason} ->
-        Logger.error("Linear GraphQL request failed: #{inspect(reason)}")
-        {:error, {:linear_api_request, reason}}
+                Logger.warning(
+                  "Linear GraphQL rate limit active retry_in_ms=#{retry_ms} status=#{response.status}" <>
+                    linear_error_context(payload, response)
+                )
+
+                {:error, {:linear_rate_limited, retry_ms}}
+
+              _ ->
+                Logger.error(
+                  "Linear GraphQL request failed status=#{response.status}" <>
+                    linear_error_context(payload, response)
+                )
+
+                {:error, {:linear_api_status, response.status}}
+            end
+
+          {:error, reason} ->
+            Logger.error("Linear GraphQL request failed: #{inspect(reason)}")
+            {:error, {:linear_api_request, reason}}
+        end
     end
+  end
+
+  @doc false
+  @spec clear_rate_limit_cooldown_for_test() :: :ok
+  def clear_rate_limit_cooldown_for_test do
+    unless :persistent_term.get(@rate_limit_cooldown_key, :unset) == :unset do
+      :persistent_term.erase(@rate_limit_cooldown_key)
+    end
+
+    :ok
   end
 
   @doc false
@@ -381,6 +412,67 @@ defmodule SymphonyElixir.Linear.Client do
       |> summarize_error_body()
 
     operation_name <> " body=" <> body
+  end
+
+  defp linear_rate_limit_retry_ms(%{body: body}) do
+    body
+    |> linear_errors()
+    |> Enum.find_value(&rate_limited_error_retry_ms/1)
+    |> normalize_positive_ms()
+  end
+
+  defp linear_rate_limit_retry_ms(_response), do: nil
+
+  defp linear_errors(%{"errors" => errors}) when is_list(errors), do: errors
+  defp linear_errors(_body), do: []
+
+  defp rate_limited_error_retry_ms(%{"extensions" => extensions}) when is_map(extensions) do
+    code = extensions["code"] || extensions[:code]
+    status_code = extensions["statusCode"] || extensions[:statusCode]
+
+    if code == "RATELIMITED" or status_code == 429 do
+      duration =
+        get_in(extensions, ["meta", "rateLimitResult", "duration"]) ||
+          get_in(extensions, [:meta, :rateLimitResult, :duration])
+
+      duration || @default_rate_limit_cooldown_ms
+    end
+  end
+
+  defp rate_limited_error_retry_ms(_error), do: nil
+
+  defp normalize_positive_ms(value) when is_integer(value) and value > 0, do: value
+
+  defp normalize_positive_ms(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {parsed, _} when parsed > 0 -> parsed
+      _ -> nil
+    end
+  end
+
+  defp normalize_positive_ms(_value), do: nil
+
+  defp rate_limit_cooldown_remaining_ms do
+    case :persistent_term.get(@rate_limit_cooldown_key, nil) do
+      cooldown_until_ms when is_integer(cooldown_until_ms) ->
+        max(cooldown_until_ms - System.monotonic_time(:millisecond), 0)
+
+      _ ->
+        0
+    end
+  end
+
+  defp set_rate_limit_cooldown(retry_ms) when is_integer(retry_ms) and retry_ms > 0 do
+    now_ms = System.monotonic_time(:millisecond)
+    cooldown_until_ms = now_ms + retry_ms
+
+    current_until_ms =
+      case :persistent_term.get(@rate_limit_cooldown_key, nil) do
+        value when is_integer(value) -> value
+        _ -> 0
+      end
+
+    :persistent_term.put(@rate_limit_cooldown_key, max(current_until_ms, cooldown_until_ms))
   end
 
   defp summarize_error_body(body) when is_binary(body) do
