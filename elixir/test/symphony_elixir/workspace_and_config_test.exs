@@ -560,6 +560,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                  )
 
         assert remaining_ms > 0
+        assert remaining_ms <= 120_000
       end)
 
     assert_received :rate_limit_request

@@ -469,7 +469,7 @@ defmodule SymphonyElixir.Linear.Client do
     current_until_ms =
       case :persistent_term.get(@rate_limit_cooldown_key, nil) do
         value when is_integer(value) -> value
-        _ -> 0
+        _ -> cooldown_until_ms
       end
 
     :persistent_term.put(@rate_limit_cooldown_key, max(current_until_ms, cooldown_until_ms))
