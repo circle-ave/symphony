@@ -319,6 +319,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       proof_value(proof, "reviewReadinessCheckPassed") != true ->
         missing_proof_field(proof, "reviewReadinessCheckPassed")
 
+      proof_value(proof, "workpadCompleted") != true ->
+        missing_proof_field(proof, "workpadCompleted")
+
       proof_value(proof, "frappeCloudDeployed") != true ->
         missing_proof_field(proof, "frappeCloudDeployed")
 
