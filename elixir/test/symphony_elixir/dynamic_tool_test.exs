@@ -2,6 +2,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Codex.DynamicTool
+  alias SymphonyElixir.Linear.Issue
 
   test "tool_specs advertises the linear_graphql input contract" do
     assert [
@@ -165,6 +166,148 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["success"] == false
   end
 
+  test "linear_graphql blocks guarded review state updates without readiness proof" do
+    test_pid = self()
+
+    with_guarded_workspace(fn workspace ->
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          linear_client: review_state_guard_client(test_pid, "In Review")
+        )
+
+      assert response["success"] == false
+      payload = Jason.decode!(response["output"])
+
+      assert payload["error"]["message"] == "Blocked review transition: missing review readiness proof."
+      assert payload["error"]["details"]["path"] == Path.join(workspace, ".symphony/review-ready.json")
+
+      assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
+      refute_received {:linear_client_called, :state_update, _variables}
+    end)
+  end
+
+  test "linear_graphql allows guarded review state updates when readiness proof matches the workspace head" do
+    test_pid = self()
+
+    with_guarded_workspace(fn workspace ->
+      write_review_ready_proof!(workspace, %{
+        "schema" => "symphony.review-ready.v1",
+        "issue" => "CIR-1",
+        "workspaceHead" => "head-123",
+        "reviewReadinessCheckPassed" => true,
+        "frappeCloudDeployed" => true,
+        "mainBranchReviewed" => true,
+        "pullRequestMerged" => true,
+        "reviewBranch" => "main",
+        "liveValidationPassed" => true,
+        "deliverableReviewPassed" => true
+      })
+
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          git_head: "head-123",
+          linear_client: review_state_guard_client(test_pid, "In Review")
+        )
+
+      assert response["success"] == true
+      assert Jason.decode!(response["output"]) == %{"data" => %{"issueUpdate" => %{"success" => true}}}
+      assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
+      assert_received {:linear_client_called, :state_update, %{"id" => "issue-1", "stateId" => "state-review"}}
+    end)
+  end
+
+  test "linear_graphql blocks guarded review updates when readiness proof reviewed a feature branch" do
+    test_pid = self()
+
+    with_guarded_workspace(fn workspace ->
+      write_review_ready_proof!(workspace, %{
+        "schema" => "symphony.review-ready.v1",
+        "issue" => "CIR-1",
+        "workspaceHead" => "head-123",
+        "reviewReadinessCheckPassed" => true,
+        "frappeCloudDeployed" => true,
+        "mainBranchReviewed" => true,
+        "pullRequestMerged" => true,
+        "reviewBranch" => "dillon/cir-1-feature",
+        "liveValidationPassed" => true,
+        "deliverableReviewPassed" => true
+      })
+
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          git_head: "head-123",
+          linear_client: review_state_guard_client(test_pid, "In Review")
+        )
+
+      assert response["success"] == false
+
+      assert Jason.decode!(response["output"])["error"]["message"] ==
+               "Blocked review transition: readiness proof did not review main."
+
+      assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
+      refute_received {:linear_client_called, :state_update, _variables}
+    end)
+  end
+
+  test "linear_graphql allows guarded non-review state updates without readiness proof" do
+    test_pid = self()
+
+    with_guarded_workspace(fn workspace ->
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-progress"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          linear_client: review_state_guard_client(test_pid, "In Progress")
+        )
+
+      assert response["success"] == true
+      assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
+      assert_received {:linear_client_called, :state_update, %{"id" => "issue-1", "stateId" => "state-progress"}}
+    end)
+  end
+
   test "linear_graphql validates required arguments before calling Linear" do
     response =
       DynamicTool.execute(
@@ -307,4 +450,63 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["success"] == true
     assert response["output"] == ":ok"
   end
+
+  defp with_guarded_workspace(fun) do
+    workspace =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-review-guard-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      File.mkdir_p!(Path.join(workspace, "scripts"))
+      File.write!(Path.join(workspace, "scripts/review_readiness_check.mjs"), "")
+      fun.(workspace)
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  defp write_review_ready_proof!(workspace, proof) do
+    proof_path = Path.join(workspace, ".symphony/review-ready.json")
+    File.mkdir_p!(Path.dirname(proof_path))
+    File.write!(proof_path, Jason.encode!(proof))
+  end
+
+  defp review_state_guard_client(test_pid, state_name) do
+    fn query, variables, opts ->
+      cond do
+        String.contains?(query, "SymphonyReviewStateGuard") ->
+          send(test_pid, {:linear_client_called, :guard_lookup, variables})
+
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "id" => variables["issueId"],
+                 "identifier" => "CIR-1",
+                 "team" => %{
+                   "states" => %{
+                     "nodes" => [
+                       %{"id" => variables["issueId"] |> state_id_for(state_name), "name" => state_name}
+                     ]
+                   }
+                 }
+               }
+             }
+           }}
+
+        String.contains?(query, "issueUpdate") ->
+          send(test_pid, {:linear_client_called, :state_update, variables})
+          assert opts == []
+          {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+
+        true ->
+          flunk("unexpected Linear query: #{query}")
+      end
+    end
+  end
+
+  defp state_id_for(_issue_id, "In Progress"), do: "state-progress"
+  defp state_id_for(_issue_id, _state_name), do: "state-review"
 end
