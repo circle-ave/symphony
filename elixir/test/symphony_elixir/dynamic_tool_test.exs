@@ -341,6 +341,56 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     end)
   end
 
+  test "linear_graphql blocks guarded review updates when acceptance proof lacks claim checks" do
+    test_pid = self()
+
+    with_guarded_workspace(fn workspace ->
+      write_review_ready_proof!(workspace, %{
+        "schema" => "symphony.review-ready.v1",
+        "issue" => "CIR-1",
+        "workspaceHead" => "head-123",
+        "reviewReadinessCheckPassed" => true,
+        "workpadCompleted" => true,
+        "functionalReviewRecipePassed" => true,
+        "frappeCloudDeployed" => true,
+        "mainBranchReviewed" => true,
+        "pullRequestMerged" => true,
+        "cloudContainsMergedPr" => true,
+        "reviewBranch" => "main",
+        "liveValidationPassed" => true,
+        "deliverableReviewPassed" => true,
+        "screenshotArtifactVerified" => true,
+        "acceptanceAgentReview" => Map.delete(acceptance_agent_review(), "claims")
+      })
+
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          git_head: "head-123",
+          linear_client: review_state_guard_client(test_pid, "In Review")
+        )
+
+      assert response["success"] == false
+      payload = Jason.decode!(response["output"])
+
+      assert payload["error"]["message"] ==
+               "Blocked review transition: independent acceptance agent proof is missing a passing claims field."
+
+      assert payload["error"]["details"]["field"] == "claims"
+      refute_received {:linear_client_called, :state_update, _variables}
+    end)
+  end
+
   test "linear_graphql blocks guarded review updates when readiness proof reviewed a feature branch" do
     test_pid = self()
 
@@ -692,6 +742,13 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       "visibleClaimsVerified" => true,
       "regressionClaimsVerified" => true,
       "deterministicValidatorsOnlySupportingEvidence" => true,
+      "claims" => [
+        %{
+          "claim" => "Debt Collection Calls",
+          "status" => "pass",
+          "evidence" => "Observed visible in the live browser DOM and screenshot."
+        }
+      ],
       "evidence" => %{
         "screenshot" => "https://uploads.linear.app/review-proof.png",
         "domSnapshot" => ".symphony/artifacts/review-dom.json",
