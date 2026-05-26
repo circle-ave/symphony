@@ -452,6 +452,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       proof_value(review, "deterministicValidatorsOnlySupportingEvidence") != true ->
         missing_acceptance_agent_field(review, "deterministicValidatorsOnlySupportingEvidence")
 
+      not acceptance_agent_claims_passed?(review) ->
+        missing_acceptance_agent_field(review, "claims")
+
       not acceptance_agent_evidence_present?(review) ->
         missing_acceptance_agent_field(review, "evidence")
 
@@ -481,6 +484,32 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp acceptance_agent_evidence_value?(value) when is_list(value), do: Enum.any?(value, &acceptance_agent_evidence_value?/1)
   defp acceptance_agent_evidence_value?(value) when is_map(value), do: value |> Map.values() |> Enum.any?(&acceptance_agent_evidence_value?/1)
   defp acceptance_agent_evidence_value?(_value), do: false
+
+  defp acceptance_agent_claims_passed?(review) do
+    case proof_value(review, "claims") do
+      claims when is_list(claims) and claims != [] ->
+        Enum.all?(claims, &acceptance_agent_claim_passed?/1)
+
+      _ ->
+        false
+    end
+  end
+
+  defp acceptance_agent_claim_passed?(%{} = claim) do
+    acceptance_agent_evidence_value?(proof_value(claim, "claim")) and
+      acceptance_agent_claim_status(claim) == "pass" and
+      acceptance_agent_evidence_value?(proof_value(claim, "evidence"))
+  end
+
+  defp acceptance_agent_claim_passed?(_claim), do: false
+
+  defp acceptance_agent_claim_status(claim) do
+    claim
+    |> proof_value("status")
+    |> to_string()
+    |> String.downcase()
+    |> String.trim()
+  end
 
   defp validate_acceptance_agent_head(review, workspace, opts) do
     case workspace_head(workspace, opts) do
