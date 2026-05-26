@@ -207,6 +207,53 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
+        "functionalReviewRecipePassed" => true,
+        "frappeCloudDeployed" => true,
+        "mainBranchReviewed" => true,
+        "pullRequestMerged" => true,
+        "cloudContainsMergedPr" => true,
+        "reviewBranch" => "main",
+        "liveValidationPassed" => true,
+        "deliverableReviewPassed" => true,
+        "screenshotArtifactVerified" => true,
+        "acceptanceAgentReview" => acceptance_agent_review()
+      })
+
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          git_head: "head-123",
+          linear_client: review_state_guard_client(test_pid, "In Review")
+        )
+
+      assert response["success"] == true
+      assert Jason.decode!(response["output"]) == %{"data" => %{"issueUpdate" => %{"success" => true}}}
+      assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
+      assert_received {:linear_client_called, :state_update, %{"id" => "issue-1", "stateId" => "state-review"}}
+    end)
+  end
+
+  test "linear_graphql blocks guarded review updates without independent acceptance proof for user-facing work" do
+    test_pid = self()
+
+    with_guarded_workspace(fn workspace ->
+      write_review_ready_proof!(workspace, %{
+        "schema" => "symphony.review-ready.v1",
+        "issue" => "CIR-1",
+        "workspaceHead" => "head-123",
+        "reviewReadinessCheckPassed" => true,
+        "workpadCompleted" => true,
+        "functionalReviewRecipePassed" => true,
         "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
@@ -234,8 +281,61 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           linear_client: review_state_guard_client(test_pid, "In Review")
         )
 
+      assert response["success"] == false
+      payload = Jason.decode!(response["output"])
+
+      assert payload["error"]["message"] ==
+               "Blocked review transition: missing independent acceptance agent proof."
+
+      assert payload["error"]["details"]["path"] ==
+               Path.join(workspace, ".symphony/acceptance-agent-review.json")
+
+      assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
+      refute_received {:linear_client_called, :state_update, _variables}
+    end)
+  end
+
+  test "linear_graphql allows guarded review updates with separate independent acceptance proof" do
+    test_pid = self()
+
+    with_guarded_workspace(fn workspace ->
+      write_review_ready_proof!(workspace, %{
+        "schema" => "symphony.review-ready.v1",
+        "issue" => "CIR-1",
+        "workspaceHead" => "head-123",
+        "reviewReadinessCheckPassed" => true,
+        "workpadCompleted" => true,
+        "functionalReviewRecipePassed" => true,
+        "frappeCloudDeployed" => true,
+        "mainBranchReviewed" => true,
+        "pullRequestMerged" => true,
+        "cloudContainsMergedPr" => true,
+        "reviewBranch" => "main",
+        "liveValidationPassed" => true,
+        "deliverableReviewPassed" => true,
+        "screenshotArtifactVerified" => true
+      })
+
+      write_acceptance_agent_review!(workspace, acceptance_agent_review())
+
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          git_head: "head-123",
+          linear_client: review_state_guard_client(test_pid, "In Review")
+        )
+
       assert response["success"] == true
-      assert Jason.decode!(response["output"]) == %{"data" => %{"issueUpdate" => %{"success" => true}}}
       assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
       assert_received {:linear_client_called, :state_update, %{"id" => "issue-1", "stateId" => "state-review"}}
     end)
@@ -251,6 +351,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
+        "functionalReviewRecipePassed" => true,
         "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
@@ -328,6 +429,53 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       assert Jason.decode!(response["output"])["error"]["message"] ==
                "Blocked review transition: readiness proof is missing a passing workpadCompleted flag."
+
+      assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
+      refute_received {:linear_client_called, :state_update, _variables}
+    end)
+  end
+
+  test "linear_graphql blocks guarded review updates when proof lacks functional recipe proof" do
+    test_pid = self()
+
+    with_guarded_workspace(fn workspace ->
+      write_review_ready_proof!(workspace, %{
+        "schema" => "symphony.review-ready.v1",
+        "issue" => "CIR-1",
+        "workspaceHead" => "head-123",
+        "reviewReadinessCheckPassed" => true,
+        "workpadCompleted" => true,
+        "frappeCloudDeployed" => true,
+        "mainBranchReviewed" => true,
+        "pullRequestMerged" => true,
+        "cloudContainsMergedPr" => true,
+        "reviewBranch" => "main",
+        "liveValidationPassed" => true,
+        "deliverableReviewPassed" => true,
+        "screenshotArtifactVerified" => true
+      })
+
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          git_head: "head-123",
+          linear_client: review_state_guard_client(test_pid, "In Review")
+        )
+
+      assert response["success"] == false
+
+      assert Jason.decode!(response["output"])["error"]["message"] ==
+               "Blocked review transition: readiness proof is missing a passing functionalReviewRecipePassed flag."
 
       assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
       refute_received {:linear_client_called, :state_update, _variables}
@@ -523,6 +671,33 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     proof_path = Path.join(workspace, ".symphony/review-ready.json")
     File.mkdir_p!(Path.dirname(proof_path))
     File.write!(proof_path, Jason.encode!(proof))
+  end
+
+  defp write_acceptance_agent_review!(workspace, review) do
+    review_path = Path.join(workspace, ".symphony/acceptance-agent-review.json")
+    File.mkdir_p!(Path.dirname(review_path))
+    File.write!(review_path, Jason.encode!(review))
+  end
+
+  defp acceptance_agent_review do
+    %{
+      "schema" => "symphony.acceptance-agent-review.v1",
+      "issue" => "CIR-1",
+      "workspaceHead" => "head-123",
+      "verdict" => "pass",
+      "testedLiveMain" => true,
+      "browserTested" => true,
+      "observeOnly" => true,
+      "claimsExtracted" => true,
+      "visibleClaimsVerified" => true,
+      "regressionClaimsVerified" => true,
+      "deterministicValidatorsOnlySupportingEvidence" => true,
+      "evidence" => %{
+        "screenshot" => "https://uploads.linear.app/review-proof.png",
+        "domSnapshot" => ".symphony/artifacts/review-dom.json",
+        "consoleNetworkLog" => ".symphony/artifacts/review-console.json"
+      }
+    }
   end
 
   defp review_state_guard_client(test_pid, state_name) do

@@ -5,6 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.Codex.Controls
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
@@ -13,6 +14,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
     socket =
       socket
       |> assign(:payload, load_payload())
+      |> assign(:controls, load_controls())
+      |> assign(:control_notice, nil)
+      |> assign(:control_error, nil)
       |> assign(:now, DateTime.utc_now())
       |> assign(:selected_issue_identifier, nil)
       |> assign(:selected_issue_payload, nil)
@@ -37,8 +41,30 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:payload, load_payload())
+     |> assign(:controls, load_controls())
      |> assign(:now, DateTime.utc_now())
      |> refresh_selected_issue()}
+  end
+
+  @impl true
+  def handle_event("update-controls", %{"controls" => controls}, socket) do
+    case Controls.update(controls) do
+      {:ok, payload} ->
+        :ok = ObservabilityPubSub.broadcast_update()
+
+        {:noreply,
+         socket
+         |> assign(:controls, payload)
+         |> assign(:payload, load_payload())
+         |> assign(:control_notice, "Saved")
+         |> assign(:control_error, nil)}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:control_notice, nil)
+         |> assign(:control_error, Controls.error_message(reason))}
+    end
   end
 
   @impl true
@@ -85,6 +111,55 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
         </div>
       </header>
+
+      <section class="section-card controls-card">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">Agent controls</h2>
+            <p class="section-copy">Model and reasoning effort for new Codex agent sessions.</p>
+          </div>
+          <%= if @control_notice do %>
+            <span class="control-status control-status-ok"><%= @control_notice %></span>
+          <% end %>
+        </div>
+
+        <%= if control_error?(@controls) do %>
+          <p class="empty-state"><%= @controls.error.message %></p>
+        <% else %>
+          <form class="control-form" phx-submit="update-controls">
+            <label class="control-field">
+              <span>Model</span>
+              <input
+                type="text"
+                name="controls[model]"
+                value={@controls.model || ""}
+                placeholder="default"
+              />
+            </label>
+
+            <label class="control-field">
+              <span>Reasoning effort</span>
+              <select
+                id={"agent-reasoning-effort-#{@controls.reasoning_effort || "default"}"}
+                name="controls[reasoning_effort]"
+              >
+                <%= Phoenix.HTML.Form.options_for_select(
+                  reasoning_effort_options(@controls),
+                  @controls.reasoning_effort || ""
+                ) %>
+              </select>
+            </label>
+
+            <button type="submit">Apply</button>
+          </form>
+
+          <%= if @control_error do %>
+            <p class="control-status control-status-error"><%= @control_error %></p>
+          <% end %>
+
+          <pre class="code-panel command-panel"><%= @controls.command %></pre>
+        <% end %>
+      </section>
 
       <%= if @payload[:error] do %>
         <section class="error-card">
@@ -450,6 +525,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
   end
 
+  defp load_controls do
+    case Controls.current() do
+      {:ok, payload} -> payload
+      {:error, reason} -> %{error: %{message: Controls.error_message(reason)}}
+    end
+  end
+
+  defp control_error?(%{error: _error}), do: true
+  defp control_error?(_controls), do: false
+
   defp refresh_selected_issue(%{assigns: %{selected_issue_identifier: nil}} = socket), do: socket
 
   defp refresh_selected_issue(%{assigns: %{selected_issue_identifier: issue_identifier}} = socket) do
@@ -538,6 +623,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
       String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
       true -> base
     end
+  end
+
+  defp effort_label("low"), do: "Low / fastest"
+  defp effort_label("medium"), do: "Medium"
+  defp effort_label("high"), do: "High"
+  defp effort_label("xhigh"), do: "XHigh / deepest"
+  defp effort_label(effort), do: effort
+
+  defp reasoning_effort_options(controls) do
+    [{"Default", ""} | Enum.map(controls.reasoning_effort_options, &{effort_label(&1), &1})]
   end
 
   defp schedule_runtime_tick do

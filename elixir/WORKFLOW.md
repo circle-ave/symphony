@@ -83,6 +83,9 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - Treat a single persistent Linear comment as the source of truth for progress.
 - Use that single workpad comment for all progress and handoff notes; do not post separate "done"/summary comments.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as non-negotiable acceptance input: mirror it in the workpad and execute it before considering the work complete.
+- Separate readiness from acceptance. Readiness evidence proves the PR/checks/deploy/artifacts are in place; acceptance evidence is an independent agent-run review of the final user path.
+- For user-facing work, deterministic validators are supporting evidence only. Before review, run an observe-only browser acceptance pass against the final review target without remounting UI, patching app state, calling app internals to force success, or relying on helper scripts that self-heal the page.
+- The independent acceptance pass must extract ticket claims first, test the visible UI and any regression claims like reload/connection churn, capture browser evidence, and record a `pass`, `fail`, or `blocked` verdict in the workpad.
 - When meaningful out-of-scope improvements are discovered during execution,
   file a separate Linear issue instead of expanding scope. The follow-up issue
   must include a clear title, description, and acceptance criteria, be placed in
@@ -229,6 +232,7 @@ Use this only when completion is blocked by missing required tools or missing au
     - Run the full PR feedback sweep protocol.
     - Confirm PR checks are passing (green) after the latest changes.
     - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
+    - For user-facing work, complete `### Independent Acceptance Review` with an observe-only browser pass on the final review target. The review must list extracted claims, the user path tested, visible UI evidence, console/network/realtime observations, screenshot/DOM evidence, and a final pass/fail/blocked verdict. Do not count deterministic validators or scripts that prepare/remount the UI as this verdict.
     - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
 12. Only then move issue to `Human Review`.
@@ -264,6 +268,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - Step 1/2 checklist is fully complete and accurately reflected in the single workpad comment.
 - Acceptance criteria and required ticket-provided validation items are complete.
 - Validation/tests are green for the latest commit.
+- User-facing work has a passing independent, observe-only browser acceptance review against the final review target.
 - PR feedback sweep is complete and no actionable comments remain.
 - PR checks are green, branch is pushed, and PR is linked on the issue.
 - Required PR metadata is present (`symphony` label).
@@ -315,6 +320,13 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ### Validation
 
 - [ ] targeted tests: `<command>`
+
+### Independent Acceptance Review
+
+- Verdict: `<pass/fail/blocked; not applicable only for non-user-facing work>`
+- Claims tested: `<ticket-visible claims and regression claims>`
+- Browser path: `<final route/user flow tested without remounting or app-state patching>`
+- Evidence: `<screenshot/DOM/console/network/realtime artifacts and observations>`
 
 ### Notes
 

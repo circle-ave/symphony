@@ -1155,6 +1155,24 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.retry_delay_for_test(3, %{delay_type: :cloud_gate}) == 60_000
   end
 
+  test "linear rate limits back off poll loop and retry polls until reset" do
+    state = %Orchestrator.State{poll_interval_ms: 5_000}
+
+    assert Orchestrator.poll_backoff_delay_for_test(state, {:linear_rate_limited, 120_000}) == 121_000
+    assert Orchestrator.poll_backoff_delay_for_test(state, {:linear_rate_limited, 500}) == 5_000
+    refute Orchestrator.poll_backoff_delay_for_test(state, {:linear_api_status, 400})
+
+    metadata =
+      Orchestrator.retry_poll_failure_metadata_for_test(
+        %{delay_type: :cloud_gate},
+        {:linear_rate_limited, 120_000}
+      )
+
+    assert metadata.error == "retry poll failed: {:linear_rate_limited, 120000}"
+    assert metadata.retry_delay_ms == 121_000
+    assert Orchestrator.retry_delay_for_test(9, metadata) == 121_000
+  end
+
   test "resource-gated retries yield slots to other runnable issues" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: ["Rework"],

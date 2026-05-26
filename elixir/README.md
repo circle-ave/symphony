@@ -154,7 +154,7 @@ codex:
 - If a later reload fails, Symphony keeps running with the last known good workflow and logs the
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
-  `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+  `/`, `/api/v1/state`, `/api/v1/controls`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
 
 ## Web dashboard
 
@@ -162,6 +162,7 @@ The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
 - JSON API for operational debugging under `/api/v1/*`
+- Agent model and reasoning-effort controls for future Codex sessions
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 

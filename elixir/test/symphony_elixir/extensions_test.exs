@@ -330,6 +330,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     snapshot = static_snapshot()
     orchestrator_name = Module.concat(__MODULE__, :ObservabilityApiOrchestrator)
 
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command: "codex --config 'model=\"gpt-5.5\"' --config model_reasoning_effort=high app-server"
+    )
+
     {:ok, _pid} =
       StaticOrchestrator.start_link(
         name: orchestrator_name,
@@ -403,6 +407,24 @@ defmodule SymphonyElixir.ExtensionsTest do
              },
              "rate_limits" => %{"primary" => %{"remaining" => 11}}
            }
+
+    conn = get(build_conn(), "/api/v1/controls")
+    controls_payload = json_response(conn, 200)
+
+    assert controls_payload["model"] == "gpt-5.5"
+    assert controls_payload["reasoning_effort"] == "high"
+    assert controls_payload["reasoning_effort_options"] == ["low", "medium", "high", "xhigh"]
+
+    conn =
+      post(build_conn(), "/api/v1/controls", %{
+        "model" => "gpt-5-mini",
+        "reasoning_effort" => "low"
+      })
+
+    controls_payload = json_response(conn, 200)
+    assert controls_payload["model"] == "gpt-5-mini"
+    assert controls_payload["reasoning_effort"] == "low"
+    assert Config.settings!().codex.command =~ "gpt-5-mini"
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")
     issue_payload = json_response(conn, 200)
@@ -536,6 +558,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert json_response(get(build_conn(), "/api/v1/refresh"), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
+    assert json_response(put(build_conn(), "/api/v1/controls", %{}), 405) ==
+             %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
+
     assert json_response(post(build_conn(), "/", %{}), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
@@ -623,6 +648,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     orchestrator_name = Module.concat(__MODULE__, :DashboardOrchestrator)
     snapshot = static_snapshot()
 
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command: "codex --config 'model=\"gpt-5.5\"' --config model_reasoning_effort=xhigh app-server"
+    )
+
     {:ok, orchestrator_pid} =
       StaticOrchestrator.start_link(
         name: orchestrator_name,
@@ -645,6 +674,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
     assert html =~ "Runtime"
+    assert html =~ "Agent controls"
+    assert html =~ "gpt-5.5"
     assert html =~ "Live"
     assert html =~ "Offline"
     assert html =~ "Copy ID"
@@ -656,6 +687,19 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
+
+    html =
+      view
+      |> form("form[phx-submit=\"update-controls\"]",
+        controls: %{model: "gpt-5-mini", reasoning_effort: "xhigh"}
+      )
+      |> render_submit()
+
+    assert html =~ "Saved"
+    assert html =~ "gpt-5-mini"
+    assert html =~ ~r/<option selected="" value="xhigh">XHigh \/ deepest<\/option>/
+    assert Config.settings!().codex.command =~ "gpt-5-mini"
+    assert Config.settings!().codex.command =~ "model_reasoning_effort=xhigh"
 
     html =
       view

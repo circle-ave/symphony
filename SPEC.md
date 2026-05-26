@@ -1433,6 +1433,21 @@ Minimum endpoints:
     }
     ```
 
+- `GET /api/v1/controls`
+  - Returns operator-editable agent controls such as the Codex model and reasoning effort used for
+    future agent sessions.
+
+- `POST /api/v1/controls`
+  - Updates supported operator-editable agent controls.
+  - Suggested request body:
+
+    ```json
+    {
+      "model": "gpt-5",
+      "reasoning_effort": "high"
+    }
+    ```
+
 - `GET /api/v1/<issue_identifier>`
   - Returns issue-specific runtime/debug details for the identified issue, including any information
     the implementation tracks that is useful for debugging.
