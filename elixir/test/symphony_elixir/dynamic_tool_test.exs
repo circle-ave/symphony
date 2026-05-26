@@ -295,6 +295,56 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     end)
   end
 
+  test "linear_graphql treats live Desk routes as user-facing even when proof says false" do
+    test_pid = self()
+
+    with_guarded_workspace(fn workspace ->
+      write_review_ready_proof!(workspace, %{
+        "schema" => "symphony.review-ready.v1",
+        "issue" => "CIR-1",
+        "workspaceHead" => "head-123",
+        "reviewReadinessCheckPassed" => true,
+        "workpadCompleted" => true,
+        "functionalReviewRecipePassed" => true,
+        "frappeCloudDeployed" => true,
+        "mainBranchReviewed" => true,
+        "pullRequestMerged" => true,
+        "cloudContainsMergedPr" => true,
+        "reviewBranch" => "main",
+        "liveValidationPassed" => true,
+        "deliverableReviewPassed" => true,
+        "screenshotArtifactVerified" => true,
+        "userFacing" => false,
+        "openUrl" => "https://law-ep.erpnext.com/app/project/CIR-1"
+      })
+
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          git_head: "head-123",
+          linear_client: review_state_guard_client(test_pid, "In Review")
+        )
+
+      assert response["success"] == false
+      payload = Jason.decode!(response["output"])
+
+      assert payload["error"]["message"] ==
+               "Blocked review transition: missing independent acceptance agent proof."
+
+      refute_received {:linear_client_called, :state_update, _variables}
+    end)
+  end
+
   test "linear_graphql allows guarded review updates with separate independent acceptance proof" do
     test_pid = self()
 
