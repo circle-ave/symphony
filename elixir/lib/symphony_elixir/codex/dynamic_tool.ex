@@ -564,7 +564,25 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     proof_value(proof, "reviewBranch") || proof_value(proof, "expectedBranch")
   end
 
-  defp proof_user_facing?(proof), do: proof_value(proof, "userFacing") != false
+  defp proof_user_facing?(proof) do
+    proof_value(proof, "userFacing") != false or proof_references_live_desk_route?(proof)
+  end
+
+  defp proof_references_live_desk_route?(proof) do
+    [
+      proof_value(proof, "openUrl"),
+      proof_value(proof, "screenshotEvidenceUrl"),
+      nested_value(proof, ["acceptanceAgentReview", "evidence", "liveRoute"]),
+      nested_value(proof, ["acceptanceAgentReview", "evidence", "screenshot"]),
+      nested_value(proof, ["liveSmoke", "command"])
+    ]
+    |> Enum.any?(&live_desk_route?/1)
+  end
+
+  defp live_desk_route?(value) when is_binary(value),
+    do: String.contains?(value, "law-ep.erpnext.com/app")
+
+  defp live_desk_route?(_value), do: false
 
   defp workspace_head(workspace, opts) do
     case Keyword.fetch(opts, :git_head) do
