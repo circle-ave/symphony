@@ -6,11 +6,35 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   use Phoenix.Controller, formats: [:json]
 
   alias Plug.Conn
-  alias SymphonyElixirWeb.{Endpoint, Presenter}
+  alias SymphonyElixir.Codex.Controls
+  alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
 
   @spec state(Conn.t(), map()) :: Conn.t()
   def state(conn, _params) do
     json(conn, Presenter.state_payload(orchestrator(), snapshot_timeout_ms()))
+  end
+
+  @spec controls(Conn.t(), map()) :: Conn.t()
+  def controls(conn, _params) do
+    case Controls.current() do
+      {:ok, payload} ->
+        json(conn, payload)
+
+      {:error, reason} ->
+        control_error_response(conn, reason)
+    end
+  end
+
+  @spec update_controls(Conn.t(), map()) :: Conn.t()
+  def update_controls(conn, params) do
+    case Controls.update(params) do
+      {:ok, payload} ->
+        :ok = ObservabilityPubSub.broadcast_update()
+        json(conn, payload)
+
+      {:error, reason} ->
+        control_error_response(conn, reason)
+    end
   end
 
   @spec issue(Conn.t(), map()) :: Conn.t()
@@ -51,6 +75,18 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     conn
     |> put_status(status)
     |> json(%{error: %{code: code, message: message}})
+  end
+
+  defp control_error_response(conn, {:invalid_controls, _message} = reason) do
+    error_response(conn, 400, "invalid_controls", Controls.error_message(reason))
+  end
+
+  defp control_error_response(conn, {:unsupported_workflow_format, _message} = reason) do
+    error_response(conn, 422, "unsupported_workflow_format", Controls.error_message(reason))
+  end
+
+  defp control_error_response(conn, reason) do
+    error_response(conn, 500, "controls_unavailable", Controls.error_message(reason))
   end
 
   defp orchestrator do

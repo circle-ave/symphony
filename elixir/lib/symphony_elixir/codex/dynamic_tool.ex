@@ -27,6 +27,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   }
   @review_state_names MapSet.new(["human review", "in review", "review"])
   @review_ready_file Path.join([".symphony", "review-ready.json"])
+  @acceptance_agent_review_file Path.join([".symphony", "acceptance-agent-review.json"])
+  @acceptance_agent_review_schema "symphony.acceptance-agent-review.v1"
   @review_blocker_files [
     Path.join([".symphony", "cloud-gate-blocked"]),
     Path.join([".symphony", "local-bench-gate-blocked"])
@@ -322,6 +324,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       proof_value(proof, "workpadCompleted") != true ->
         missing_proof_field(proof, "workpadCompleted")
 
+      proof_user_facing?(proof) and proof_value(proof, "functionalReviewRecipePassed") != true ->
+        missing_proof_field(proof, "functionalReviewRecipePassed")
+
       proof_value(proof, "frappeCloudDeployed") != true ->
         missing_proof_field(proof, "frappeCloudDeployed")
 
@@ -350,7 +355,151 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         missing_proof_field(proof, "screenshotArtifactVerified")
 
       true ->
-        validate_review_ready_head(proof, workspace, opts)
+        with :ok <- validate_acceptance_agent_review(proof, workspace, expected_issue, target, opts) do
+          validate_review_ready_head(proof, workspace, opts)
+        end
+    end
+  end
+
+  defp validate_acceptance_agent_review(proof, workspace, expected_issue, target, opts) do
+    if proof_user_facing?(proof) do
+      with {:ok, review} <- read_acceptance_agent_review(proof, workspace),
+           :ok <- validate_acceptance_agent_issue(review, expected_issue, target),
+           :ok <- validate_acceptance_agent_fields(review),
+           :ok <- validate_acceptance_agent_head(review, workspace, opts) do
+        :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp read_acceptance_agent_review(proof, workspace) do
+    case proof_value(proof, "acceptanceAgentReview") || proof_value(proof, "acceptanceAgent") do
+      review when is_map(review) ->
+        {:ok, Map.put_new(review, "_path", proof["_path"])}
+
+      _ ->
+        review_path = Path.join(workspace, @acceptance_agent_review_file)
+
+        case File.read(review_path) do
+          {:ok, body} ->
+            case Jason.decode(body) do
+              {:ok, review} when is_map(review) ->
+                {:ok, Map.put(review, "_path", review_path)}
+
+              _ ->
+                review_transition_error("Blocked review transition: independent acceptance agent proof is not valid JSON.", %{
+                  "path" => review_path
+                })
+            end
+
+          {:error, _reason} ->
+            review_transition_error("Blocked review transition: missing independent acceptance agent proof.", %{
+              "path" => review_path,
+              "requiredEvidence" => "Run an observe-only browser acceptance review on the live main deployment and record a pass verdict before review."
+            })
+        end
+    end
+  end
+
+  defp validate_acceptance_agent_issue(review, expected_issue, target) do
+    candidates = Enum.reject([expected_issue, target.issue_identifier, target.issue_id], &is_nil/1)
+
+    if proof_value(review, "issue") in candidates do
+      :ok
+    else
+      review_transition_error("Blocked review transition: independent acceptance agent proof belongs to a different issue.", %{
+        "path" => review["_path"],
+        "proofIssue" => proof_value(review, "issue"),
+        "expectedIssue" => expected_issue
+      })
+    end
+  end
+
+  defp validate_acceptance_agent_fields(review) do
+    cond do
+      proof_value(review, "schema") != @acceptance_agent_review_schema ->
+        review_transition_error("Blocked review transition: independent acceptance agent proof has an unsupported schema.", %{
+          "path" => review["_path"],
+          "schema" => proof_value(review, "schema")
+        })
+
+      acceptance_agent_verdict(review) != "pass" ->
+        review_transition_error("Blocked review transition: independent acceptance agent did not pass the ticket.", %{
+          "path" => review["_path"],
+          "verdict" => proof_value(review, "verdict")
+        })
+
+      proof_value(review, "testedLiveMain") != true ->
+        missing_acceptance_agent_field(review, "testedLiveMain")
+
+      proof_value(review, "browserTested") != true ->
+        missing_acceptance_agent_field(review, "browserTested")
+
+      proof_value(review, "observeOnly") != true ->
+        missing_acceptance_agent_field(review, "observeOnly")
+
+      proof_value(review, "claimsExtracted") != true ->
+        missing_acceptance_agent_field(review, "claimsExtracted")
+
+      proof_value(review, "visibleClaimsVerified") != true ->
+        missing_acceptance_agent_field(review, "visibleClaimsVerified")
+
+      proof_value(review, "regressionClaimsVerified") != true ->
+        missing_acceptance_agent_field(review, "regressionClaimsVerified")
+
+      proof_value(review, "deterministicValidatorsOnlySupportingEvidence") != true ->
+        missing_acceptance_agent_field(review, "deterministicValidatorsOnlySupportingEvidence")
+
+      not acceptance_agent_evidence_present?(review) ->
+        missing_acceptance_agent_field(review, "evidence")
+
+      true ->
+        :ok
+    end
+  end
+
+  defp acceptance_agent_verdict(review) do
+    review
+    |> proof_value("verdict")
+    |> to_string()
+    |> String.downcase()
+    |> String.trim()
+  end
+
+  defp acceptance_agent_evidence_present?(review) do
+    case proof_value(review, "evidence") do
+      value when is_binary(value) -> String.trim(value) != ""
+      value when is_list(value) -> Enum.any?(value, &acceptance_agent_evidence_value?/1)
+      value when is_map(value) -> value |> Map.values() |> Enum.any?(&acceptance_agent_evidence_value?/1)
+      _ -> false
+    end
+  end
+
+  defp acceptance_agent_evidence_value?(value) when is_binary(value), do: String.trim(value) != ""
+  defp acceptance_agent_evidence_value?(value) when is_list(value), do: Enum.any?(value, &acceptance_agent_evidence_value?/1)
+  defp acceptance_agent_evidence_value?(value) when is_map(value), do: value |> Map.values() |> Enum.any?(&acceptance_agent_evidence_value?/1)
+  defp acceptance_agent_evidence_value?(_value), do: false
+
+  defp validate_acceptance_agent_head(review, workspace, opts) do
+    case workspace_head(workspace, opts) do
+      {:ok, head} ->
+        if proof_value(review, "workspaceHead") == head do
+          :ok
+        else
+          review_transition_error("Blocked review transition: independent acceptance agent proof does not match the current workspace HEAD.", %{
+            "path" => review["_path"],
+            "proofHead" => proof_value(review, "workspaceHead"),
+            "currentHead" => head
+          })
+        end
+
+      {:error, reason} ->
+        review_transition_error("Blocked review transition: could not verify current workspace HEAD for independent acceptance proof.", %{
+          "path" => review["_path"],
+          "reason" => inspect(reason)
+        })
     end
   end
 
@@ -412,6 +561,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp missing_proof_field(proof, field) do
     review_transition_error("Blocked review transition: readiness proof is missing a passing #{field} flag.", %{
       "path" => proof["_path"],
+      "field" => field
+    })
+  end
+
+  defp missing_acceptance_agent_field(review, field) do
+    review_transition_error("Blocked review transition: independent acceptance agent proof is missing a passing #{field} field.", %{
+      "path" => review["_path"],
       "field" => field
     })
   end

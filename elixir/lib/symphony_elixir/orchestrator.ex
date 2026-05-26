@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Orchestrator do
   @failure_retry_base_ms 10_000
   @resource_gate_released_retry_delay_ms 1_000
   @resource_gate_slot_retry_delay_ms 1_000
+  @linear_rate_limit_resume_buffer_ms 1_000
   @terminal_workspace_cleanup_interval_ms 600_000
   @resource_gate_markers %{
     cloud_gate: Path.join([".symphony", "cloud-gate-blocked"]),
@@ -129,8 +130,8 @@ defmodule SymphonyElixir.Orchestrator do
     state = cleanup_orphaned_resource_locks(state)
     state = maybe_run_terminal_workspace_cleanup(state)
     state = wake_released_resource_gate_retries(state)
-    state = maybe_dispatch(state)
-    state = schedule_tick(state, state.poll_interval_ms)
+    {state, poll_delay_ms} = maybe_dispatch(state)
+    state = schedule_tick(state, poll_delay_ms || state.poll_interval_ms)
     state = %{state | poll_check_in_progress: false}
 
     notify_dashboard()
@@ -295,45 +296,50 @@ defmodule SymphonyElixir.Orchestrator do
       state = update_comment_reply_reserve(state, comment_reply_issues)
       state = choose_comment_reply_issues(comment_reply_issues, state)
       state = update_comment_reply_reserve(state, comment_reply_issues)
-      choose_issues(issues, state)
+      {choose_issues(issues, state), nil}
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
-        state
+        {state, nil}
 
       {:error, :missing_linear_project_slug} ->
         Logger.error("Linear project slug missing in WORKFLOW.md")
-        state
+        {state, nil}
 
       {:error, :missing_tracker_kind} ->
         Logger.error("Tracker kind missing in WORKFLOW.md")
 
-        state
+        {state, nil}
 
       {:error, {:unsupported_tracker_kind, kind}} ->
         Logger.error("Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}")
 
-        state
+        {state, nil}
 
       {:error, {:invalid_workflow_config, message}} ->
         Logger.error("Invalid WORKFLOW.md config: #{message}")
-        state
+        {state, nil}
 
       {:error, {:missing_workflow_file, path, reason}} ->
         Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
-        state
+        {state, nil}
 
       {:error, :workflow_front_matter_not_a_map} ->
         Logger.error("Failed to parse WORKFLOW.md: workflow front matter must decode to a map")
-        state
+        {state, nil}
 
       {:error, {:workflow_parse_error, reason}} ->
         Logger.error("Failed to parse WORKFLOW.md: #{inspect(reason)}")
-        state
+        {state, nil}
+
+      {:error, {:linear_rate_limited, _remaining_ms} = reason} ->
+        poll_delay_ms = poll_backoff_delay_ms(state, reason)
+        Logger.warning("Linear rate limited; backing off polling for #{poll_delay_ms}ms: #{inspect(reason)}")
+        {state, poll_delay_ms}
 
       {:error, reason} ->
         Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
-        state
+        {state, nil}
     end
   end
 
@@ -350,7 +356,7 @@ defmodule SymphonyElixir.Orchestrator do
 
           {:error, reason} ->
             Logger.warning("Skipping Waiting recovery sweep; failed to fetch Waiting issues: #{inspect(reason)}")
-            :ok
+            if linear_rate_limit_error?(reason), do: {:error, reason}, else: :ok
         end
     end
   end
@@ -634,6 +640,18 @@ defmodule SymphonyElixir.Orchestrator do
   @spec retry_delay_for_test(pos_integer(), map()) :: pos_integer()
   def retry_delay_for_test(attempt, metadata) when is_integer(attempt) and is_map(metadata) do
     retry_delay(attempt, metadata)
+  end
+
+  @doc false
+  @spec poll_backoff_delay_for_test(State.t(), term()) :: non_neg_integer() | nil
+  def poll_backoff_delay_for_test(%State{} = state, reason) do
+    poll_backoff_delay_ms(state, reason)
+  end
+
+  @doc false
+  @spec retry_poll_failure_metadata_for_test(map(), term()) :: map()
+  def retry_poll_failure_metadata_for_test(metadata, reason) when is_map(metadata) do
+    retry_poll_failure_metadata(metadata, reason)
   end
 
   @doc false
@@ -1550,7 +1568,7 @@ defmodule SymphonyElixir.Orchestrator do
            state,
            issue_id,
            attempt + 1,
-           Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
+           retry_poll_failure_metadata(metadata, reason)
          )}
     end
   end
@@ -2137,6 +2155,45 @@ defmodule SymphonyElixir.Orchestrator do
         end
     end
   end
+
+  defp retry_poll_failure_metadata(metadata, reason) when is_map(metadata) do
+    metadata
+    |> Map.merge(%{error: "retry poll failed: #{inspect(reason)}"})
+    |> maybe_put_linear_rate_limit_retry_delay(reason)
+  end
+
+  defp maybe_put_linear_rate_limit_retry_delay(metadata, reason) do
+    case linear_rate_limit_delay_ms(reason) do
+      delay_ms when is_integer(delay_ms) -> Map.put(metadata, :retry_delay_ms, delay_ms)
+      nil -> metadata
+    end
+  end
+
+  defp poll_backoff_delay_ms(%State{poll_interval_ms: poll_interval_ms}, reason) do
+    case linear_rate_limit_delay_ms(reason) do
+      delay_ms when is_integer(delay_ms) ->
+        max(normalize_delay_ms(poll_interval_ms), delay_ms)
+
+      nil ->
+        nil
+    end
+  end
+
+  defp linear_rate_limit_delay_ms({:linear_rate_limited, remaining_ms})
+       when is_integer(remaining_ms) and remaining_ms > 0 do
+    remaining_ms + @linear_rate_limit_resume_buffer_ms
+  end
+
+  defp linear_rate_limit_delay_ms(_reason), do: nil
+
+  defp linear_rate_limit_error?({:linear_rate_limited, remaining_ms})
+       when is_integer(remaining_ms) and remaining_ms > 0,
+       do: true
+
+  defp linear_rate_limit_error?(_reason), do: false
+
+  defp normalize_delay_ms(delay_ms) when is_integer(delay_ms) and delay_ms >= 0, do: delay_ms
+  defp normalize_delay_ms(_delay_ms), do: 0
 
   defp failure_retry_delay(attempt) do
     max_delay_power = min(attempt - 1, 10)
