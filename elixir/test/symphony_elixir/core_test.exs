@@ -1,6 +1,23 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  defmodule RetryLinearClient do
+    def fetch_candidate_issues do
+      send(self(), :retry_fetch_candidate_issues)
+      {:ok, []}
+    end
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:retry_fetch_issues_by_states, states})
+      {:ok, []}
+    end
+
+    def fetch_issue_states_by_ids(ids) do
+      send(self(), {:retry_fetch_issue_states_by_ids, ids})
+      {:ok, Process.get({__MODULE__, :issues}, [])}
+    end
+  end
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -525,6 +542,52 @@ defmodule SymphonyElixir.CoreTest do
     send(pid, :tick)
     refute_receive {:memory_tracker_state_update, "issue-waiting-gated", _state}, 300
     refute_receive {:memory_tracker_comment, "issue-waiting-gated", _body}, 300
+  end
+
+  test "waiting issues with human blocker markers stay in Waiting" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-waiting-human-blocker-#{System.unique_integer([:positive])}"
+      )
+
+    issue = %Issue{
+      id: "issue-waiting-human-blocker",
+      identifier: "MT-703",
+      title: "Waiting for product input",
+      state: "Waiting",
+      blocked_by: []
+    }
+
+    marker_dir = Path.join([test_root, issue.identifier, ".symphony"])
+    File.mkdir_p!(marker_dir)
+    File.write!(Path.join(marker_dir, "waiting-blocked"), "missing source screenshots\n")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: test_root,
+      tracker_active_states: ["Rework", "In Progress"],
+      tracker_waiting_state: "Waiting",
+      poll_interval_ms: 30_000
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    orchestrator_name = Module.concat(__MODULE__, :WaitingHumanBlockerOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+
+      File.rm_rf(test_root)
+    end)
+
+    send(pid, :tick)
+    refute_receive {:memory_tracker_state_update, "issue-waiting-human-blocker", _state}, 300
+    refute_receive {:memory_tracker_comment, "issue-waiting-human-blocker", _body}, 300
   end
 
   test "active issues with live resource gate locks park before dispatch" do
@@ -1085,7 +1148,7 @@ defmodule SymphonyElixir.CoreTest do
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :LocalBenchGateRetryOrchestrator)
 
-    write_workflow_file!(Workflow.workflow_file_path(), local_bench_gate_retry_cooldown_ms: 25_000)
+    write_workflow_file!(Workflow.workflow_file_path(), local_bench_gate_retry_cooldown_ms: 120_000)
 
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
@@ -1128,7 +1191,7 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(state.running, issue_id)
     refute MapSet.member?(state.completed, issue_id)
     assert %{attempt: 1, delay_type: :local_bench_gate, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
-    assert_due_in_range(due_at_ms, 24_000, 25_500)
+    assert_due_in_range(due_at_ms, 119_000, 120_500)
   end
 
   test "resource gate retry delays use configured cooldowns" do
@@ -1171,6 +1234,97 @@ defmodule SymphonyElixir.CoreTest do
     assert metadata.error == "retry poll failed: {:linear_rate_limited, 120000}"
     assert metadata.retry_delay_ms == 121_000
     assert Orchestrator.retry_delay_for_test(9, metadata) == 121_000
+  end
+
+  test "retry refresh polls only the retried issue by id" do
+    issue_id = "issue-retry-by-id"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_active_states: ["Rework"],
+      tracker_terminal_states: ["Done"]
+    )
+
+    previous_client = Application.get_env(:symphony_elixir, :linear_client_module)
+    Application.put_env(:symphony_elixir, :linear_client_module, RetryLinearClient)
+
+    on_exit(fn ->
+      if is_nil(previous_client) do
+        Application.delete_env(:symphony_elixir, :linear_client_module)
+      else
+        Application.put_env(:symphony_elixir, :linear_client_module, previous_client)
+      end
+    end)
+
+    Process.put(
+      {RetryLinearClient, :issues},
+      [%Issue{id: issue_id, identifier: "MT-700", state: "Done"}]
+    )
+
+    state = %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      max_concurrent_agents: 1
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_retry_issue_for_test(state, issue_id, 1, %{identifier: "MT-700"})
+
+    assert_receive {:retry_fetch_issue_states_by_ids, [^issue_id]}
+    refute_receive :retry_fetch_candidate_issues
+    refute MapSet.member?(updated_state.claimed, issue_id)
+  end
+
+  test "resource-gated retries stay local while marker is still busy" do
+    issue_id = "issue-local-gate-retry"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_active_states: ["Rework"],
+      cloud_gate_retry_cooldown_ms: 60_000
+    )
+
+    previous_client = Application.get_env(:symphony_elixir, :linear_client_module)
+    Application.put_env(:symphony_elixir, :linear_client_module, RetryLinearClient)
+
+    on_exit(fn ->
+      if is_nil(previous_client) do
+        Application.delete_env(:symphony_elixir, :linear_client_module)
+      else
+        Application.put_env(:symphony_elixir, :linear_client_module, previous_client)
+      end
+    end)
+
+    workspace =
+      Path.join(System.tmp_dir!(), "symphony-busy-cloud-gate-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+    lock_path = Path.join(workspace, "deploy.lock")
+    File.write!(lock_path, "busy\n")
+    File.write!(Path.join([workspace, ".symphony", "cloud-gate-blocked"]), "lock=#{lock_path}\n")
+
+    on_exit(fn -> File.rm_rf(workspace) end)
+
+    state = %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      max_concurrent_agents: 1
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_retry_issue_for_test(state, issue_id, 1, %{
+               identifier: "MT-701",
+               delay_type: :cloud_gate,
+               workspace_path: workspace
+             })
+
+    refute_receive {:retry_fetch_issue_states_by_ids, _ids}
+    refute_receive :retry_fetch_candidate_issues
+
+    assert %{attempt: 2, error: "cloud gate busy", delay_type: :cloud_gate} =
+             updated_state.retry_attempts[issue_id]
   end
 
   test "resource-gated retries yield slots to other runnable issues" do

@@ -454,6 +454,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
               "user" => %{"id" => "user-1", "displayName" => "dillon"}
             },
             %{
+              "id" => "comment-superseded-workpad",
+              "body" => "## Superseded Codex Workpad\n\nStale duplicate.",
+              "createdAt" => "2026-05-06T12:02:00Z",
+              "user" => %{"id" => "user-1", "displayName" => "dillon"}
+            },
+            %{
               "id" => "comment-human",
               "body" => "Can you check this before merge?",
               "createdAt" => "2026-05-06T11:59:00Z",
