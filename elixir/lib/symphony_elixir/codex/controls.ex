@@ -219,7 +219,6 @@ defmodule SymphonyElixir.Codex.Controls do
         {:error, reason} -> {:error, {:workflow_update_failed, reason}}
       end
     else
-      {:error, %File.Error{} = error} -> {:error, {:workflow_update_failed, error.reason}}
       {:error, reason} -> {:error, reason}
     end
   end

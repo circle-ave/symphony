@@ -227,8 +227,6 @@ defmodule SymphonyElixir.AgentRunner do
     end)
   end
 
-  defp resource_gate_block(_workspace), do: nil
-
   defp active_issue_state?(state_name) when is_binary(state_name) do
     normalized_state = normalize_issue_state(state_name)
 

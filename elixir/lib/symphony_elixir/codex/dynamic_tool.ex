@@ -117,14 +117,22 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp authorize_linear_graphql(query, variables, opts, linear_client) do
     if review_guard_required?(opts) and issue_state_update_query?(query) do
-      with {:ok, issue_id, state_id} <- issue_state_update_ids(query, variables),
-           {:ok, target} <- fetch_target_state(linear_client, issue_id, state_id) do
-        if review_state?(target.state_name) do
-          verify_review_ready(opts, target)
-        else
-          :ok
-        end
-      end
+      authorize_issue_state_update(query, variables, opts, linear_client)
+    else
+      :ok
+    end
+  end
+
+  defp authorize_issue_state_update(query, variables, opts, linear_client) do
+    with {:ok, issue_id, state_id} <- issue_state_update_ids(query, variables),
+         {:ok, target} <- fetch_target_state(linear_client, issue_id, state_id) do
+      authorize_target_state(opts, target)
+    end
+  end
+
+  defp authorize_target_state(opts, target) do
+    if review_state?(target.state_name) do
+      verify_review_ready(opts, target)
     else
       :ok
     end
@@ -249,9 +257,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
     with :ok <- verify_workspace_for_review(workspace),
          :ok <- ensure_no_review_blockers(workspace),
-         {:ok, proof} <- read_review_ready_proof(workspace),
-         :ok <- validate_review_ready_proof(proof, workspace, issue, target, opts) do
-      :ok
+         {:ok, proof} <- read_review_ready_proof(workspace) do
+      validate_review_ready_proof(proof, workspace, issue, target, opts)
     end
   end
 
@@ -305,6 +312,14 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         target.issue_identifier ||
         target.issue_id
 
+    with :ok <- validate_review_ready_identity(proof, expected_issue, target),
+         :ok <- validate_review_ready_flags(proof),
+         :ok <- validate_acceptance_agent_review(proof, workspace, expected_issue, target, opts) do
+      validate_review_ready_head(proof, workspace, opts)
+    end
+  end
+
+  defp validate_review_ready_identity(proof, expected_issue, target) do
     cond do
       proof_value(proof, "schema") != "symphony.review-ready.v1" ->
         review_transition_error("Blocked review transition: readiness proof has an unsupported schema.", %{
@@ -318,46 +333,57 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           "expectedIssue" => expected_issue
         })
 
-      proof_value(proof, "reviewReadinessCheckPassed") != true ->
-        missing_proof_field(proof, "reviewReadinessCheckPassed")
-
-      proof_value(proof, "workpadCompleted") != true ->
-        missing_proof_field(proof, "workpadCompleted")
-
-      proof_user_facing?(proof) and proof_value(proof, "functionalReviewRecipePassed") != true ->
-        missing_proof_field(proof, "functionalReviewRecipePassed")
-
-      proof_value(proof, "frappeCloudDeployed") != true ->
-        missing_proof_field(proof, "frappeCloudDeployed")
-
-      proof_value(proof, "mainBranchReviewed") != true ->
-        missing_proof_field(proof, "mainBranchReviewed")
-
-      proof_value(proof, "pullRequestMerged") != true ->
-        missing_proof_field(proof, "pullRequestMerged")
-
-      proof_value(proof, "cloudContainsMergedPr") != true ->
-        missing_proof_field(proof, "cloudContainsMergedPr")
-
-      proof_review_branch(proof) != "main" ->
-        review_transition_error("Blocked review transition: readiness proof did not review main.", %{
-          "path" => proof["_path"],
-          "reviewBranch" => proof_review_branch(proof)
-        })
-
-      proof_value(proof, "liveValidationPassed") != true ->
-        missing_proof_field(proof, "liveValidationPassed")
-
-      proof_value(proof, "deliverableReviewPassed") != true ->
-        missing_proof_field(proof, "deliverableReviewPassed")
-
-      proof_user_facing?(proof) and proof_value(proof, "screenshotArtifactVerified") != true ->
-        missing_proof_field(proof, "screenshotArtifactVerified")
-
       true ->
-        with :ok <- validate_acceptance_agent_review(proof, workspace, expected_issue, target, opts) do
-          validate_review_ready_head(proof, workspace, opts)
-        end
+        :ok
+    end
+  end
+
+  defp validate_review_ready_flags(proof) do
+    with :ok <- require_true_proof_fields(proof, required_review_ready_fields()),
+         :ok <- require_true_proof_fields(proof, user_facing_review_ready_fields(proof)) do
+      validate_review_branch(proof)
+    end
+  end
+
+  defp required_review_ready_fields do
+    [
+      "reviewReadinessCheckPassed",
+      "workpadCompleted",
+      "frappeCloudDeployed",
+      "mainBranchReviewed",
+      "pullRequestMerged",
+      "cloudContainsMergedPr",
+      "liveValidationPassed",
+      "deliverableReviewPassed"
+    ]
+  end
+
+  defp user_facing_review_ready_fields(proof) do
+    if proof_user_facing?(proof) do
+      ["functionalReviewRecipePassed", "screenshotArtifactVerified"]
+    else
+      []
+    end
+  end
+
+  defp require_true_proof_fields(proof, fields) do
+    Enum.reduce_while(fields, :ok, fn field, :ok ->
+      if proof_value(proof, field) == true do
+        {:cont, :ok}
+      else
+        {:halt, missing_proof_field(proof, field)}
+      end
+    end)
+  end
+
+  defp validate_review_branch(proof) do
+    if proof_review_branch(proof) == "main" do
+      :ok
+    else
+      review_transition_error("Blocked review transition: readiness proof did not review main.", %{
+        "path" => proof["_path"],
+        "reviewBranch" => proof_review_branch(proof)
+      })
     end
   end
 
@@ -365,9 +391,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     if proof_user_facing?(proof) do
       with {:ok, review} <- read_acceptance_agent_review(proof, workspace),
            :ok <- validate_acceptance_agent_issue(review, expected_issue, target),
-           :ok <- validate_acceptance_agent_fields(review),
-           :ok <- validate_acceptance_agent_head(review, workspace, opts) do
-        :ok
+           :ok <- validate_acceptance_agent_fields(review) do
+        validate_acceptance_agent_head(review, workspace, opts)
       end
     else
       :ok
@@ -380,27 +405,36 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         {:ok, Map.put_new(review, "_path", proof["_path"])}
 
       _ ->
-        review_path = Path.join(workspace, @acceptance_agent_review_file)
-
-        case File.read(review_path) do
-          {:ok, body} ->
-            case Jason.decode(body) do
-              {:ok, review} when is_map(review) ->
-                {:ok, Map.put(review, "_path", review_path)}
-
-              _ ->
-                review_transition_error("Blocked review transition: independent acceptance agent proof is not valid JSON.", %{
-                  "path" => review_path
-                })
-            end
-
-          {:error, _reason} ->
-            review_transition_error("Blocked review transition: missing independent acceptance agent proof.", %{
-              "path" => review_path,
-              "requiredEvidence" => "Run an observe-only browser acceptance review on the live main deployment and record a pass verdict before review."
-            })
-        end
+        read_acceptance_agent_review_file(workspace)
     end
+  end
+
+  defp read_acceptance_agent_review_file(workspace) do
+    review_path = Path.join(workspace, @acceptance_agent_review_file)
+
+    case File.read(review_path) do
+      {:ok, body} -> decode_acceptance_agent_review(body, review_path)
+      {:error, _reason} -> missing_acceptance_agent_review(review_path)
+    end
+  end
+
+  defp decode_acceptance_agent_review(body, review_path) do
+    case Jason.decode(body) do
+      {:ok, review} when is_map(review) ->
+        {:ok, Map.put(review, "_path", review_path)}
+
+      _ ->
+        review_transition_error("Blocked review transition: independent acceptance agent proof is not valid JSON.", %{
+          "path" => review_path
+        })
+    end
+  end
+
+  defp missing_acceptance_agent_review(review_path) do
+    review_transition_error("Blocked review transition: missing independent acceptance agent proof.", %{
+      "path" => review_path,
+      "requiredEvidence" => "Run an observe-only browser acceptance review on the live main deployment and record a pass verdict before review."
+    })
   end
 
   defp validate_acceptance_agent_issue(review, expected_issue, target) do
@@ -418,6 +452,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp validate_acceptance_agent_fields(review) do
+    with :ok <- validate_acceptance_agent_schema(review),
+         :ok <- require_true_acceptance_agent_fields(review, required_acceptance_agent_fields()) do
+      validate_acceptance_agent_evidence(review)
+    end
+  end
+
+  defp validate_acceptance_agent_schema(review) do
     cond do
       proof_value(review, "schema") != @acceptance_agent_review_schema ->
         review_transition_error("Blocked review transition: independent acceptance agent proof has an unsupported schema.", %{
@@ -431,27 +472,35 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           "verdict" => proof_value(review, "verdict")
         })
 
-      proof_value(review, "testedLiveMain") != true ->
-        missing_acceptance_agent_field(review, "testedLiveMain")
+      true ->
+        :ok
+    end
+  end
 
-      proof_value(review, "browserTested") != true ->
-        missing_acceptance_agent_field(review, "browserTested")
+  defp required_acceptance_agent_fields do
+    [
+      "testedLiveMain",
+      "browserTested",
+      "observeOnly",
+      "claimsExtracted",
+      "visibleClaimsVerified",
+      "regressionClaimsVerified",
+      "deterministicValidatorsOnlySupportingEvidence"
+    ]
+  end
 
-      proof_value(review, "observeOnly") != true ->
-        missing_acceptance_agent_field(review, "observeOnly")
+  defp require_true_acceptance_agent_fields(review, fields) do
+    Enum.reduce_while(fields, :ok, fn field, :ok ->
+      if proof_value(review, field) == true do
+        {:cont, :ok}
+      else
+        {:halt, missing_acceptance_agent_field(review, field)}
+      end
+    end)
+  end
 
-      proof_value(review, "claimsExtracted") != true ->
-        missing_acceptance_agent_field(review, "claimsExtracted")
-
-      proof_value(review, "visibleClaimsVerified") != true ->
-        missing_acceptance_agent_field(review, "visibleClaimsVerified")
-
-      proof_value(review, "regressionClaimsVerified") != true ->
-        missing_acceptance_agent_field(review, "regressionClaimsVerified")
-
-      proof_value(review, "deterministicValidatorsOnlySupportingEvidence") != true ->
-        missing_acceptance_agent_field(review, "deterministicValidatorsOnlySupportingEvidence")
-
+  defp validate_acceptance_agent_evidence(review) do
+    cond do
       not acceptance_agent_claims_passed?(review) ->
         missing_acceptance_agent_field(review, "claims")
 

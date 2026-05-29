@@ -198,36 +198,47 @@ defmodule SymphonyElixir.Linear.Client do
         {:error, {:linear_rate_limited, remaining_ms}}
 
       _ ->
-        with {:ok, headers} <- graphql_headers(),
-             {:ok, %{status: 200, body: body}} <- request_fun.(payload, headers) do
-          {:ok, body}
-        else
-          {:ok, response} ->
-            case linear_rate_limit_retry_ms(response) do
-              retry_ms when is_integer(retry_ms) and retry_ms > 0 ->
-                set_rate_limit_cooldown(retry_ms)
-
-                Logger.warning(
-                  "Linear GraphQL rate limit active retry_in_ms=#{retry_ms} status=#{response.status}" <>
-                    linear_error_context(payload, response)
-                )
-
-                {:error, {:linear_rate_limited, retry_ms}}
-
-              _ ->
-                Logger.error(
-                  "Linear GraphQL request failed status=#{response.status}" <>
-                    linear_error_context(payload, response)
-                )
-
-                {:error, {:linear_api_status, response.status}}
-            end
-
-          {:error, reason} ->
-            Logger.error("Linear GraphQL request failed: #{inspect(reason)}")
-            {:error, {:linear_api_request, reason}}
-        end
+        run_graphql_request(payload, request_fun)
     end
+  end
+
+  defp run_graphql_request(payload, request_fun) do
+    with {:ok, headers} <- graphql_headers(),
+         {:ok, response} <- request_fun.(payload, headers) do
+      handle_graphql_response(payload, response)
+    else
+      {:error, reason} ->
+        Logger.error("Linear GraphQL request failed: #{inspect(reason)}")
+        {:error, {:linear_api_request, reason}}
+    end
+  end
+
+  defp handle_graphql_response(_payload, %{status: 200, body: body}), do: {:ok, body}
+
+  defp handle_graphql_response(payload, response) do
+    case linear_rate_limit_retry_ms(response) do
+      retry_ms when is_integer(retry_ms) and retry_ms > 0 ->
+        handle_graphql_rate_limit(payload, response, retry_ms)
+
+      _ ->
+        Logger.error(
+          "Linear GraphQL request failed status=#{response.status}" <>
+            linear_error_context(payload, response)
+        )
+
+        {:error, {:linear_api_status, response.status}}
+    end
+  end
+
+  defp handle_graphql_rate_limit(payload, response, retry_ms) do
+    set_rate_limit_cooldown(retry_ms)
+
+    Logger.warning(
+      "Linear GraphQL rate limit active retry_in_ms=#{retry_ms} status=#{response.status}" <>
+        linear_error_context(payload, response)
+    )
+
+    {:error, {:linear_rate_limited, retry_ms}}
   end
 
   @doc false
@@ -613,6 +624,7 @@ defmodule SymphonyElixir.Linear.Client do
   defp ignored_comment_body?(body) when is_binary(body) do
     String.contains?(body, @comment_reply_marker) or
       String.starts_with?(body, "## Codex Workpad") or
+      String.starts_with?(body, "## Superseded Codex Workpad") or
       String.starts_with?(body, "Moved to ") or
       String.starts_with?(body, "Moved back to ")
   end

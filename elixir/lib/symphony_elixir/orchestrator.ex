@@ -20,6 +20,9 @@ defmodule SymphonyElixir.Orchestrator do
     cloud_gate: Path.join([".symphony", "cloud-gate-blocked"]),
     local_bench_gate: Path.join([".symphony", "local-bench-gate-blocked"])
   }
+  @waiting_blocker_markers [
+    Path.join([".symphony", "waiting-blocked"])
+  ]
   @comment_reply_reserved_slots 1
   @comment_reply_marker "<!-- symphony-comment-reply -->"
   @waiting_auto_recovery_marker "<!-- symphony-waiting-auto-recovery -->"
@@ -55,6 +58,8 @@ defmodule SymphonyElixir.Orchestrator do
       comment_reply_seen: nil,
       comment_reply_reserve_active: false
     ]
+
+    @type t :: %__MODULE__{}
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -345,19 +350,20 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_recover_waiting_issues do
     case configured_waiting_state() do
-      nil ->
+      nil -> :ok
+      waiting_state -> recover_waiting_issues_by_state(waiting_state)
+    end
+  end
+
+  defp recover_waiting_issues_by_state(waiting_state) do
+    case Tracker.fetch_issues_by_states([waiting_state]) do
+      {:ok, issues} ->
+        Enum.each(issues, &maybe_recover_waiting_issue/1)
         :ok
 
-      waiting_state ->
-        case Tracker.fetch_issues_by_states([waiting_state]) do
-          {:ok, issues} ->
-            Enum.each(issues, &maybe_recover_waiting_issue/1)
-            :ok
-
-          {:error, reason} ->
-            Logger.warning("Skipping Waiting recovery sweep; failed to fetch Waiting issues: #{inspect(reason)}")
-            if linear_rate_limit_error?(reason), do: {:error, reason}, else: :ok
-        end
+      {:error, reason} ->
+        Logger.warning("Skipping Waiting recovery sweep; failed to fetch Waiting issues: #{inspect(reason)}")
+        if linear_rate_limit_error?(reason), do: {:error, reason}, else: :ok
     end
   end
 
@@ -379,7 +385,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_blocked_by_non_terminal?(issue, terminal_states) ->
         :ok
 
-      waiting_issue_has_resource_gate_marker?(issue) ->
+      waiting_issue_has_blocker_marker?(issue) ->
         :ok
 
       true ->
@@ -401,15 +407,16 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp issue_blocked_by_non_terminal?(_issue, _terminal_states), do: false
 
-  defp waiting_issue_has_resource_gate_marker?(%Issue{identifier: identifier}) when is_binary(identifier) do
+  defp waiting_issue_has_blocker_marker?(%Issue{identifier: identifier}) when is_binary(identifier) do
     workspace_path = issue_workspace_path(identifier)
+    marker_names = @waiting_blocker_markers ++ Map.values(@resource_gate_markers)
 
-    Enum.any?(@resource_gate_markers, fn {_delay_type, marker_name} ->
+    Enum.any?(marker_names, fn marker_name ->
       File.exists?(Path.join(workspace_path, marker_name))
     end)
   end
 
-  defp waiting_issue_has_resource_gate_marker?(_issue), do: false
+  defp waiting_issue_has_blocker_marker?(_issue), do: false
 
   defp recover_waiting_issue(%Issue{id: issue_id, identifier: identifier} = issue)
        when is_binary(issue_id) do
@@ -455,7 +462,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp waiting_recovery_comment_body(recovery_state) do
     """
-    Operator auto-recovery: `Waiting` has no live Linear blocker relation and no live `.symphony/cloud-gate-blocked` or `.symphony/local-bench-gate-blocked` marker in the workspace, so Symphony is returning this issue to `#{recovery_state}` to continue.
+    Operator auto-recovery: `Waiting` has no live Linear blocker relation and no live `.symphony/waiting-blocked`, `.symphony/cloud-gate-blocked`, or `.symphony/local-bench-gate-blocked` marker in the workspace, so Symphony is returning this issue to `#{recovery_state}` to continue.
     #{@waiting_auto_recovery_marker}
     """
     |> String.trim()
@@ -692,6 +699,14 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_active_retry_for_test(%State{} = state, %Issue{} = issue, attempt, metadata, issues)
       when is_integer(attempt) and is_map(metadata) and is_list(issues) do
     handle_active_retry(state, issue, attempt, metadata, issues)
+  end
+
+  @doc false
+  @spec handle_retry_issue_for_test(State.t(), String.t(), pos_integer(), map()) ::
+          {:noreply, State.t()}
+  def handle_retry_issue_for_test(%State{} = state, issue_id, attempt, metadata)
+      when is_binary(issue_id) and is_integer(attempt) and is_map(metadata) do
+    handle_retry_issue(state, issue_id, attempt, metadata)
   end
 
   @spec cloud_gate_blocked_for_test?(map()) :: boolean()
@@ -1136,20 +1151,13 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
-  defp choose_comment_reply_issues(_issues, state), do: state
-
   defp should_dispatch_comment_reply_issue?(
          %Issue{id: issue_id, latest_comment_id: comment_id} = issue,
          %State{running: running, claimed: claimed, comment_reply_seen: seen} = state,
          terminal_states
        )
        when is_binary(issue_id) and is_binary(comment_id) and is_map(seen) do
-    issue_routable?(issue) and
-      comment_reply_issue_state?(issue.state) and
-      !terminal_issue_state?(issue.state, terminal_states) and
-      Map.get(seen, issue_id) != comment_id and
-      !MapSet.member?(claimed, issue_id) and
-      !Map.has_key?(running, issue_id) and
+    comment_reply_ready?(issue, running, claimed, seen, terminal_states) and
       available_slots(state) > 0 and
       state_slots_available?(issue, running) and
       worker_slots_available?(state)
@@ -1171,17 +1179,42 @@ defmodule SymphonyElixir.Orchestrator do
          terminal_states
        )
        when is_binary(issue_id) and is_binary(comment_id) and is_map(seen) do
-    issue_routable_to_worker?(issue) and
-      comment_reply_issue_state?(issue.state) and
-      !terminal_issue_state?(issue.state, terminal_states) and
-      Map.get(seen, issue_id) != comment_id and
-      !MapSet.member?(claimed, issue_id) and
-      !Map.has_key?(running, issue_id) and
+    comment_reply_ready?(issue, running, claimed, seen, terminal_states) and
       state_slots_available?(issue, running) and
       worker_slots_available?(state)
   end
 
   defp pending_comment_reply_issue?(_issue, _state, _terminal_states), do: false
+
+  defp comment_reply_ready?(
+         %Issue{id: issue_id, latest_comment_id: comment_id} = issue,
+         running,
+         claimed,
+         seen,
+         terminal_states
+       )
+       when is_binary(issue_id) and is_binary(comment_id) and is_map(running) and
+              is_struct(claimed, MapSet) and is_map(seen) do
+    comment_reply_issue_active?(issue, terminal_states) and
+      comment_reply_unseen?(issue_id, comment_id, seen) and
+      issue_unclaimed?(issue_id, running, claimed)
+  end
+
+  defp comment_reply_ready?(_issue, _running, _claimed, _seen, _terminal_states), do: false
+
+  defp comment_reply_issue_active?(%Issue{} = issue, terminal_states) do
+    issue_routable?(issue) and
+      comment_reply_issue_state?(issue.state) and
+      !terminal_issue_state?(issue.state, terminal_states)
+  end
+
+  defp comment_reply_unseen?(issue_id, comment_id, seen) do
+    Map.get(seen, issue_id) != comment_id
+  end
+
+  defp issue_unclaimed?(issue_id, running, claimed) do
+    !MapSet.member?(claimed, issue_id) and !Map.has_key?(running, issue_id)
+  end
 
   defp comment_reply_issue_state?(state_name) when is_binary(state_name) do
     MapSet.member?(comment_reply_state_set(), normalize_issue_state(state_name))
@@ -1348,6 +1381,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     String.downcase(String.trim(state_name))
   end
+
+  defp normalize_issue_state(_state_name), do: ""
 
   defp terminal_state_set do
     Config.settings!().tracker.terminal_states
@@ -1554,7 +1589,35 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
-    case Tracker.fetch_candidate_issues() do
+    cond do
+      resource_gate_retry_still_blocked?(metadata) ->
+        Logger.info("Resource-gated retry stayed parked without Linear poll: issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id} delay_type=#{metadata[:delay_type]}")
+
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue_id,
+           attempt + 1,
+           Map.merge(metadata, %{error: resource_gate_error(metadata[:delay_type])})
+         )}
+
+      !retry_capacity_may_be_available?(state, metadata) ->
+        Logger.debug("No available slots for retrying issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}; retrying again without Linear poll")
+
+        metadata =
+          metadata
+          |> Map.merge(%{error: "no available orchestrator slots"})
+          |> maybe_use_resource_gate_slot_retry_delay()
+
+        {:noreply, schedule_issue_retry(state, issue_id, attempt + 1, metadata)}
+
+      true ->
+        poll_retry_issue_by_id(state, issue_id, attempt, metadata)
+    end
+  end
+
+  defp poll_retry_issue_by_id(%State{} = state, issue_id, attempt, metadata) do
+    case Tracker.fetch_issue_states_by_ids([issue_id]) do
       {:ok, issues} ->
         issues
         |> find_issue_by_id(issue_id)
@@ -1571,6 +1634,10 @@ defmodule SymphonyElixir.Orchestrator do
            retry_poll_failure_metadata(metadata, reason)
          )}
     end
+  end
+
+  defp retry_capacity_may_be_available?(%State{} = state, metadata) when is_map(metadata) do
+    normal_issue_slots_available?(state) and worker_slots_available?(state, metadata[:worker_host])
   end
 
   defp handle_retry_issue_lookup(%Issue{} = issue, state, issue_id, attempt, metadata, issues) do
@@ -1758,8 +1825,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp resource_gate_retry_still_blocked?(_metadata), do: false
-
   defp resource_gate_retry_yield_error(:cloud_gate), do: "cloud gate yielded to runnable work"
   defp resource_gate_retry_yield_error("cloud_gate"), do: "cloud gate yielded to runnable work"
   defp resource_gate_retry_yield_error(:local_bench_gate), do: "local bench gate yielded to runnable work"
@@ -1840,19 +1905,21 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp marker_resource_gate_busy?(:cloud_gate, marker_path) do
-    with {:ok, marker} <- File.read(marker_path) do
-      cond do
-        marker_resource_job_running?(marker) ->
-          true
+    case File.read(marker_path) do
+      {:ok, marker} ->
+        cond do
+          marker_resource_job_running?(marker) ->
+            true
 
-        lock_path = marker_value(marker, "lock") ->
-          File.exists?(lock_path)
+          lock_path = marker_value(marker, "lock") ->
+            File.exists?(lock_path)
 
-        true ->
-          false
-      end
-    else
-      _ -> false
+          true ->
+            false
+        end
+
+      _ ->
+        false
     end
   end
 
@@ -1911,25 +1978,26 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp resource_lock_paths_from_entry(entry) when is_map(entry) do
-    workspace_path = Map.get(entry, :workspace_path)
+    case Map.get(entry, :workspace_path) do
+      workspace_path when is_binary(workspace_path) and workspace_path != "" ->
+        Enum.flat_map(@resource_gate_markers, &resource_lock_paths_from_marker(workspace_path, &1))
 
-    if is_binary(workspace_path) and workspace_path != "" do
-      @resource_gate_markers
-      |> Enum.flat_map(fn {delay_type, marker_name} ->
-        marker_path = Path.join(workspace_path, marker_name)
-
-        if File.exists?(marker_path) do
-          marker_resource_lock_paths(delay_type, marker_path)
-        else
-          []
-        end
-      end)
-    else
-      []
+      _ ->
+        []
     end
   end
 
   defp resource_lock_paths_from_entry(_entry), do: []
+
+  defp resource_lock_paths_from_marker(workspace_path, {delay_type, marker_name}) do
+    marker_path = Path.join(workspace_path, marker_name)
+
+    if File.exists?(marker_path) do
+      marker_resource_lock_paths(delay_type, marker_path)
+    else
+      []
+    end
+  end
 
   defp marker_resource_lock_paths(:cloud_gate, marker_path) do
     with {:ok, marker} <- File.read(marker_path),
@@ -1977,33 +2045,31 @@ defmodule SymphonyElixir.Orchestrator do
     owner_path = Path.join(lock_path, "owner")
 
     case File.read(owner_path) do
-      {:ok, owner_text} ->
-        owner =
-          owner_text
-          |> String.split("\n", trim: true)
-          |> Enum.reduce(%{}, fn line, owner ->
-            case String.split(line, "=", parts: 2) do
-              [key, value] -> Map.put(owner, String.trim(key), String.trim(value))
-              _ -> owner
-            end
-          end)
+      {:ok, owner_text} -> {:ok, parse_resource_lock_owner(owner_text)}
+      {:error, _reason} -> :missing_owner
+    end
+  end
 
-        {:ok, owner}
+  defp parse_resource_lock_owner(owner_text) when is_binary(owner_text) do
+    owner_text
+    |> String.split("\n", trim: true)
+    |> Enum.reduce(%{}, &put_resource_lock_owner_line/2)
+  end
 
-      {:error, _reason} ->
-        :missing_owner
+  defp put_resource_lock_owner_line(line, owner) do
+    case String.split(line, "=", parts: 2) do
+      [key, value] -> Map.put(owner, String.trim(key), String.trim(value))
+      _ -> owner
     end
   end
 
   defp maybe_cleanup_owned_resource_lock(lock_path, owner) do
     owner_pid = owner_pid(owner)
 
-    cond do
-      is_integer(owner_pid) and not os_pid_alive?(owner_pid) ->
-        remove_resource_lock(lock_path, owner, "owner pid is no longer running")
-
-      true ->
-        :ok
+    if is_integer(owner_pid) and not os_pid_alive?(owner_pid) do
+      remove_resource_lock(lock_path, owner, "owner pid is no longer running")
+    else
+      :ok
     end
   end
 
@@ -2072,8 +2138,6 @@ defmodule SymphonyElixir.Orchestrator do
         nil
     end
   end
-
-  defp resource_status_for_entry(_entry), do: nil
 
   defp resource_status_from_workspace(workspace_path, preferred_delay_type) do
     delay_types =
@@ -2144,17 +2208,21 @@ defmodule SymphonyElixir.Orchestrator do
         delay_ms
 
       _ ->
-        case {metadata[:delay_type], attempt} do
-          {:continuation, 1} -> @continuation_retry_delay_ms
-          {"continuation", 1} -> @continuation_retry_delay_ms
-          {:cloud_gate, _attempt} -> Config.settings!().agent.cloud_gate_retry_cooldown_ms
-          {"cloud_gate", _attempt} -> Config.settings!().agent.cloud_gate_retry_cooldown_ms
-          {:local_bench_gate, _attempt} -> Config.settings!().agent.local_bench_gate_retry_cooldown_ms
-          {"local_bench_gate", _attempt} -> Config.settings!().agent.local_bench_gate_retry_cooldown_ms
-          _ -> failure_retry_delay(attempt)
-        end
+        retry_delay_for_type(attempt, metadata[:delay_type])
     end
   end
+
+  defp retry_delay_for_type(1, delay_type) when delay_type in [:continuation, "continuation"],
+    do: @continuation_retry_delay_ms
+
+  defp retry_delay_for_type(_attempt, delay_type) when delay_type in [:cloud_gate, "cloud_gate"],
+    do: Config.settings!().agent.cloud_gate_retry_cooldown_ms
+
+  defp retry_delay_for_type(_attempt, delay_type)
+       when delay_type in [:local_bench_gate, "local_bench_gate"],
+       do: Config.settings!().agent.local_bench_gate_retry_cooldown_ms
+
+  defp retry_delay_for_type(attempt, _delay_type), do: failure_retry_delay(attempt)
 
   defp retry_poll_failure_metadata(metadata, reason) when is_map(metadata) do
     metadata
@@ -2237,13 +2305,17 @@ defmodule SymphonyElixir.Orchestrator do
   defp resource_gate_block(running_entry) when is_map(running_entry) do
     case Map.get(running_entry, :workspace_path) do
       workspace_path when is_binary(workspace_path) ->
-        Enum.find_value(@resource_gate_markers, fn {gate, marker} ->
-          if File.exists?(Path.join(workspace_path, marker)), do: gate
-        end)
+        resource_gate_block_at_path(workspace_path)
 
       _ ->
         nil
     end
+  end
+
+  defp resource_gate_block_at_path(workspace_path) do
+    Enum.find_value(@resource_gate_markers, fn {gate, marker} ->
+      if File.exists?(Path.join(workspace_path, marker)), do: gate
+    end)
   end
 
   defp resource_gate_error(:cloud_gate), do: "cloud gate busy"

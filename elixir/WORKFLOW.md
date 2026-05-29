@@ -15,7 +15,7 @@ tracker:
     - Duplicate
     - Done
 polling:
-  interval_ms: 5000
+  interval_ms: 30000
 workspace:
   root: ~/code/symphony-workspaces
 hooks:
@@ -246,23 +246,35 @@ Use this only when completion is blocked by missing required tools or missing au
 
 ## Step 3: Human Review and merge handling
 
-1. When the issue is in `Human Review`, do not code or change ticket content.
+1. When the issue is in `Human Review`, do not code or change ticket content unless explicitly asked to process the review.
 2. Poll for updates as needed, including GitHub PR review comments from humans and bots.
-3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
-4. If approved, human moves the issue to `Merging`.
-5. When the issue is in `Merging`, open and follow `.codex/skills/land/SKILL.md`, then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
-6. After merge is complete, move the issue to `Done`.
+3. If explicitly asked to process a review-lane ticket, run the review recipe browser check:
+   - Confirm exactly one active `## Codex Workpad`; if multiple exist, stop and resolve the duplicate workpads first.
+   - Extract the current `Demo / Review Recipe` from the active workpad only.
+   - Use `SymphonyElixir.ReviewRecipe.prepare/1` and `SymphonyElixir.ReviewRecipe.evaluate/2` when running a structured local check.
+   - Open the recipe URL in a real browser session.
+   - Treat login redirects, 404/not-found pages, wrong routes, and stale fixtures as review failures.
+   - Verify the visible claims in the recipe, not just that the page loaded.
+   - Check browser console warnings/errors.
+   - Record the browser result for the human reviewer; do not move the issue to `Done`, `Rework`, or another lane unless explicitly asked.
+   - The human reviewer owns the final lane decision/action.
+4. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
+5. If approved, human moves the issue to `Merging`.
+6. When the issue is in `Merging`, open and follow `.codex/skills/land/SKILL.md`, then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
+7. After merge is complete, move the issue to `Done`.
 
 ## Step 4: Rework handling
 
 1. Treat `Rework` as a full approach reset, not incremental patching.
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
 3. Close the existing PR tied to the issue.
-4. Remove the existing `## Codex Workpad` comment from the issue.
+4. Reuse the existing `## Codex Workpad` comment and rewrite it in place as the fresh reset workpad.
+   - Do not create a second workpad when one already exists.
+   - Preserve any still-useful historical facts in a compact `Notes` entry, then replace stale plans, recipes, and validation with the reset attempt's current source of truth.
 5. Create a fresh branch from `origin/main`.
 6. Start over from the normal kickoff flow:
    - If current issue state is `Todo`, move it to `In Progress`; otherwise keep the current state.
-   - Create a new bootstrap `## Codex Workpad` comment.
+   - Find/reuse the single `## Codex Workpad` comment; create one only if none exists.
    - Build a fresh plan/checklist and execute end-to-end.
 
 ## Completion bar before Human Review
@@ -283,6 +295,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
 - Do not edit the issue body/description for planning or progress tracking.
 - Use exactly one persistent workpad comment (`## Codex Workpad`) per issue.
+- If multiple workpad comments already exist, keep the newest/current one as `## Codex Workpad` and rewrite older duplicates so they no longer use that marker; do not continue until there is one source of truth.
 - If comment editing is unavailable in-session, use the update script. Only report blocked if both MCP editing and script-based editing are unavailable.
 - Temporary proof edits are allowed only for local verification and must be reverted before commit.
 - If out-of-scope improvements are found, create a separate Backlog issue rather
