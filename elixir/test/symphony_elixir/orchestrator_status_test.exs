@@ -100,6 +100,28 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              message: %{method: "some-event"},
              timestamp: now
            }
+
+    assert [
+             %{event: :session_started, message: "session started", timestamp: ^now},
+             %{event: :notification, message: "some-event", timestamp: ^now}
+           ] = snapshot_entry.codex_stream_window
+
+    Enum.each(1..14, fn index ->
+      send(
+        pid,
+        {:codex_worker_update, issue_id,
+         %{
+           event: :notification,
+           payload: %{method: "event-#{index}"},
+           timestamp: now
+         }}
+      )
+    end)
+
+    assert %{running: [snapshot_entry]} = GenServer.call(pid, :snapshot)
+    assert length(snapshot_entry.codex_stream_window) == 12
+    assert %{message: "event-3"} = List.first(snapshot_entry.codex_stream_window)
+    assert %{message: "event-14"} = List.last(snapshot_entry.codex_stream_window)
   end
 
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do

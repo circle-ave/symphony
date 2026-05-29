@@ -22,9 +22,21 @@ defmodule SymphonyElixirWeb.Layouts do
         <meta name="csrf-token" content={@csrf_token} />
         <title>Symphony Observability</title>
         <link rel="icon" type="image/png" sizes="128x128" href={@favicon_url} />
+        <script>
+          (function () {
+            try {
+              var stored = localStorage.getItem("symphony-theme");
+              var preferred = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+              document.documentElement.dataset.theme = stored || preferred;
+            } catch (_error) {
+              document.documentElement.dataset.theme = "light";
+            }
+          })();
+        </script>
         <script defer src="/vendor/phoenix_html/phoenix_html.js"></script>
         <script defer src="/vendor/phoenix/phoenix.js"></script>
         <script defer src="/vendor/phoenix_live_view/phoenix_live_view.js"></script>
+        <script defer src="/dashboard-reload.js"></script>
         <script>
           window.addEventListener("DOMContentLoaded", function () {
             var csrfToken = document

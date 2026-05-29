@@ -28,6 +28,7 @@ defmodule SymphonyElixir.Orchestrator do
   @waiting_auto_recovery_marker "<!-- symphony-waiting-auto-recovery -->"
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
+  @codex_stream_window_size 12
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -1072,7 +1073,8 @@ defmodule SymphonyElixir.Orchestrator do
       blocked_at: DateTime.utc_now(),
       last_codex_message: Map.get(running_entry, :last_codex_message),
       last_codex_event: Map.get(running_entry, :last_codex_event),
-      last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp)
+      last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp),
+      codex_stream_window: Map.get(running_entry, :codex_stream_window, [])
     }
 
     %{
@@ -1465,6 +1467,7 @@ defmodule SymphonyElixir.Orchestrator do
             last_codex_message: nil,
             last_codex_timestamp: nil,
             last_codex_event: nil,
+            codex_stream_window: [],
             codex_app_server_pid: nil,
             comment_reply: Keyword.get(runner_opts, :comment_reply, false),
             codex_input_tokens: 0,
@@ -2496,6 +2499,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
+          codex_stream_window: Map.get(metadata, :codex_stream_window, []),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -2532,7 +2536,8 @@ defmodule SymphonyElixir.Orchestrator do
           blocked_at: Map.get(metadata, :blocked_at),
           last_codex_timestamp: Map.get(metadata, :last_codex_timestamp),
           last_codex_message: Map.get(metadata, :last_codex_message),
-          last_codex_event: Map.get(metadata, :last_codex_event)
+          last_codex_event: Map.get(metadata, :last_codex_event),
+          codex_stream_window: Map.get(metadata, :codex_stream_window, [])
         }
       end)
 
@@ -2583,12 +2588,15 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
 
+    summarized_update = summarize_codex_update(update)
+
     {
       Map.merge(running_entry, %{
         last_codex_timestamp: timestamp,
-        last_codex_message: summarize_codex_update(update),
+        last_codex_message: summarized_update,
         session_id: session_id_for_update(running_entry.session_id, update),
         last_codex_event: event,
+        codex_stream_window: append_codex_stream_window(running_entry, summarized_update),
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
@@ -2644,6 +2652,19 @@ defmodule SymphonyElixir.Orchestrator do
       message: update[:payload] || update[:raw],
       timestamp: update[:timestamp]
     }
+  end
+
+  defp append_codex_stream_window(running_entry, summarized_update) do
+    entry = %{
+      event: summarized_update.event,
+      message: StatusDashboard.humanize_codex_message(summarized_update),
+      timestamp: summarized_update.timestamp
+    }
+
+    running_entry
+    |> Map.get(:codex_stream_window, [])
+    |> Kernel.++([entry])
+    |> Enum.take(-@codex_stream_window_size)
   end
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do

@@ -7,7 +7,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
 
   alias Plug.Conn
   alias SymphonyElixir.Codex.Controls
-  alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
+  alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter, StaticAssets}
 
   @spec state(Conn.t(), map()) :: Conn.t()
   def state(conn, _params) do
@@ -59,6 +59,11 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
       {:error, :unavailable} ->
         error_response(conn, 503, "orchestrator_unavailable", "Orchestrator is unavailable")
     end
+  end
+
+  @spec reload_version(Conn.t(), map()) :: Conn.t()
+  def reload_version(conn, _params) do
+    json(conn, StaticAssets.reload_version_payload())
   end
 
   @spec method_not_allowed(Conn.t(), map()) :: Conn.t()

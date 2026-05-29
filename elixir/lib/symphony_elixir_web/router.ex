@@ -17,6 +17,7 @@ defmodule SymphonyElixirWeb.Router do
   scope "/", SymphonyElixirWeb do
     get("/dashboard.css", StaticAssetController, :dashboard_css)
     get("/favicon.png", StaticAssetController, :favicon)
+    get("/dashboard-reload.js", StaticAssetController, :dashboard_reload_js)
     get("/vendor/phoenix_html/phoenix_html.js", StaticAssetController, :phoenix_html_js)
     get("/vendor/phoenix/phoenix.js", StaticAssetController, :phoenix_js)
     get("/vendor/phoenix_live_view/phoenix_live_view.js", StaticAssetController, :phoenix_live_view_js)
@@ -31,6 +32,7 @@ defmodule SymphonyElixirWeb.Router do
   scope "/", SymphonyElixirWeb do
     get("/api/v1/state", ObservabilityApiController, :state)
     get("/api/v1/controls", ObservabilityApiController, :controls)
+    get("/api/v1/dev/reload-version", ObservabilityApiController, :reload_version)
     post("/api/v1/controls", ObservabilityApiController, :update_controls)
 
     match(:*, "/", ObservabilityApiController, :method_not_allowed)

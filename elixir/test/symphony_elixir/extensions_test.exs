@@ -351,9 +351,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     conn = get(build_conn(), "/api/v1/state")
     state_payload = json_response(conn, 200)
 
+    assert [%{"message" => "recent stream entry"}] = state_payload["running"] |> List.first() |> Map.fetch!("stream_window")
+    assert [%{"message" => "blocked stream entry"}] = state_payload["blocked"] |> List.first() |> Map.fetch!("stream_window")
+
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
              "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
+             "system" => state_payload["system"],
+             "environment" => state_payload["environment"],
              "running" => [
                %{
                  "issue_id" => "issue-http",
@@ -363,12 +368,14 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "resource_status" => nil,
+                 "activity" => state_payload["running"] |> List.first() |> Map.fetch!("activity"),
                  "session_id" => "thread-http",
                  "turn_count" => 7,
                  "last_event" => "notification",
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
+                 "stream_window" => state_payload["running"] |> List.first() |> Map.fetch!("stream_window"),
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
              ],
@@ -383,7 +390,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "delay_type" => nil,
                  "worker_host" => nil,
                  "workspace_path" => nil,
-                 "resource_status" => nil
+                 "resource_status" => nil,
+                 "activity" => state_payload["retrying"] |> List.first() |> Map.fetch!("activity")
                }
              ],
              "blocked" => [
@@ -396,10 +404,12 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
                  "session_id" => "thread-blocked",
+                 "activity" => state_payload["blocked"] |> List.first() |> Map.fetch!("activity"),
                  "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
                  "last_event" => "turn_input_required",
                  "last_message" => "turn blocked: waiting for user input",
-                 "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at")
+                 "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at"),
+                 "stream_window" => state_payload["blocked"] |> List.first() |> Map.fetch!("stream_window")
                }
              ],
              "codex_totals" => %{
@@ -445,6 +455,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "worker_host" => nil,
                "workspace_path" => nil,
                "resource_status" => nil,
+               "activity" => issue_payload["running"]["activity"],
                "session_id" => "thread-http",
                "turn_count" => 7,
                "state" => "In Progress",
@@ -452,6 +463,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
+               "stream_window" => issue_payload["running"]["stream_window"],
                "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
              },
              "retry" => nil,
@@ -627,6 +639,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~
              ~r|<link rel="icon" type="image/png" sizes="128x128" href="/favicon\.png\?v=[0-9a-f]{12}">|
 
+    assert html =~ "/dashboard-reload.js"
+    assert html =~ "symphony-theme"
     assert html =~ "/vendor/phoenix_html/phoenix_html.js"
     assert html =~ "/vendor/phoenix/phoenix.js"
     assert html =~ "/vendor/phoenix_live_view/phoenix_live_view.js"
@@ -635,6 +649,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"
+    assert dashboard_css =~ ":root[data-theme=\"dark\"]"
+    assert dashboard_css =~ "#e96324"
+    assert dashboard_css =~ "#026af2"
     assert dashboard_css =~ ".status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
@@ -643,6 +660,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     favicon_conn = get(build_conn(), "/favicon.png")
     assert response(favicon_conn, 200) == File.read!("priv/static/favicon.png")
     assert Plug.Conn.get_resp_header(favicon_conn, "content-type") == ["image/png; charset=utf-8"]
+
+    reload_js = response(get(build_conn(), "/dashboard-reload.js"), 200)
+    assert reload_js =~ "/api/v1/dev/reload-version"
+    assert reload_js =~ "symphony-theme"
+    assert reload_js =~ "updateCss"
+
+    assert %{"server" => _, "css" => _, "page" => _} =
+             json_response(get(build_conn(), "/api/v1/dev/reload-version"), 200)
 
     phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
     assert phoenix_html_js =~ "phoenix.link.click"
@@ -691,12 +716,18 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "turn blocked: waiting for user input"
     assert html =~ "Runtime"
     assert html =~ "Agent controls"
+    assert html =~ "Workload"
+    assert html =~ "Capacity"
+    assert html =~ "Throughput"
+    assert html =~ "Agents"
+    assert html =~ "Theme"
+    assert html =~ "Recent stream"
+    assert html =~ "recent stream entry"
     assert html =~ "gpt-5.5"
     assert html =~ "Live"
     assert html =~ "Offline"
     assert html =~ "Copy ID"
     assert html =~ "Inspect thread"
-    assert html =~ "Codex update"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
@@ -821,6 +852,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css.status == 200
     assert dashboard_css.body =~ ":root {"
 
+    reload_version = Req.get!("http://127.0.0.1:#{port}/api/v1/dev/reload-version")
+    assert reload_version.status == 200
+    assert Map.has_key?(reload_version.body, "css")
+
     phoenix_js = Req.get!("http://127.0.0.1:#{port}/vendor/phoenix/phoenix.js")
     assert phoenix_js.status == 200
     assert phoenix_js.body =~ "var Phoenix = (() => {"
@@ -871,6 +906,13 @@ defmodule SymphonyElixir.ExtensionsTest do
           last_codex_message: "rendered",
           last_codex_timestamp: nil,
           last_codex_event: :notification,
+          codex_stream_window: [
+            %{
+              event: :notification,
+              message: "recent stream entry",
+              timestamp: DateTime.utc_now()
+            }
+          ],
           codex_input_tokens: 4,
           codex_output_tokens: 8,
           codex_total_tokens: 12,
@@ -904,7 +946,14 @@ defmodule SymphonyElixir.ExtensionsTest do
             message: %{"method" => "turn/input_required"},
             timestamp: DateTime.utc_now()
           },
-          last_codex_timestamp: DateTime.utc_now()
+          last_codex_timestamp: DateTime.utc_now(),
+          codex_stream_window: [
+            %{
+              event: :turn_input_required,
+              message: "blocked stream entry",
+              timestamp: DateTime.utc_now()
+            }
+          ]
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},

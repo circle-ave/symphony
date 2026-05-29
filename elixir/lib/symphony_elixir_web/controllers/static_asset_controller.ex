@@ -14,6 +14,9 @@ defmodule SymphonyElixirWeb.StaticAssetController do
   @spec favicon(Conn.t(), map()) :: Conn.t()
   def favicon(conn, _params), do: serve(conn, "/favicon.png")
 
+  @spec dashboard_reload_js(Conn.t(), map()) :: Conn.t()
+  def dashboard_reload_js(conn, _params), do: serve(conn, "/dashboard-reload.js")
+
   @spec phoenix_html_js(Conn.t(), map()) :: Conn.t()
   def phoenix_html_js(conn, _params), do: serve(conn, "/vendor/phoenix_html/phoenix_html.js")
 
@@ -28,7 +31,7 @@ defmodule SymphonyElixirWeb.StaticAssetController do
       {:ok, content_type, body} ->
         conn
         |> put_resp_content_type(content_type)
-        |> put_resp_header("cache-control", "public, max-age=31536000")
+        |> put_resp_header("cache-control", StaticAssets.cache_control(path))
         |> send_resp(200, body)
 
       :error ->
