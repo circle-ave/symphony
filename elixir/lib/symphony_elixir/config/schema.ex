@@ -161,6 +161,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:cloud_gate_retry_cooldown_ms, :integer, default: 1_800_000)
       field(:local_bench_gate_retry_cooldown_ms, :integer, default: 60_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
+      field(:roles, :map, default: %{})
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -174,7 +175,8 @@ defmodule SymphonyElixir.Config.Schema do
           :max_retry_backoff_ms,
           :cloud_gate_retry_cooldown_ms,
           :local_bench_gate_retry_cooldown_ms,
-          :max_concurrent_agents_by_state
+          :max_concurrent_agents_by_state,
+          :roles
         ],
         empty_values: []
       )
@@ -185,6 +187,8 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:local_bench_gate_retry_cooldown_ms, greater_than: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
+      |> update_change(:roles, &Schema.normalize_agent_roles/1)
+      |> Schema.validate_agent_roles(:roles)
     end
   end
 
@@ -371,6 +375,22 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   @doc false
+  @spec normalize_agent_roles(nil | map()) :: map()
+  def normalize_agent_roles(nil), do: %{}
+
+  def normalize_agent_roles(roles) when is_map(roles) do
+    Enum.reduce(roles, %{}, fn {role_name, attrs}, acc ->
+      normalized_attrs =
+        case attrs do
+          %{} -> normalize_keys(attrs)
+          other -> other
+        end
+
+      Map.put(acc, to_string(role_name), normalized_attrs)
+    end)
+  end
+
+  @doc false
   @spec validate_state_limits(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
   def validate_state_limits(changeset, field) do
     validate_change(changeset, field, fn ^field, limits ->
@@ -387,6 +407,73 @@ defmodule SymphonyElixir.Config.Schema do
         end
       end)
     end)
+  end
+
+  @doc false
+  @spec validate_agent_roles(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
+  def validate_agent_roles(changeset, field) do
+    validate_change(changeset, field, fn ^field, roles ->
+      Enum.flat_map(roles, fn {role_name, attrs} ->
+        validate_agent_role(field, role_name, attrs)
+      end)
+    end)
+  end
+
+  defp validate_agent_role(field, role_name, attrs) when is_map(attrs) do
+    [
+      if(String.trim(to_string(role_name)) == "", do: {field, "role names must not be blank"}),
+      validate_agent_role_command(field, attrs),
+      validate_agent_role_optional_string(field, attrs, "cwd"),
+      validate_agent_role_positive_integer(field, attrs, "interval_ms"),
+      validate_agent_role_positive_integer(field, attrs, "timeout_ms"),
+      validate_agent_role_boolean(field, attrs, "enabled"),
+      validate_agent_role_phase(field, attrs)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp validate_agent_role(field, _role_name, _attrs), do: [{field, "roles must be maps"}]
+
+  defp validate_agent_role_command(field, attrs) do
+    case Map.get(attrs, "command") do
+      command when is_binary(command) ->
+        if String.trim(command) == "", do: {field, "role command must not be blank"}
+
+      _ ->
+        {field, "role command must be a string"}
+    end
+  end
+
+  defp validate_agent_role_optional_string(field, attrs, key) do
+    case Map.get(attrs, key) do
+      nil -> nil
+      value when is_binary(value) -> nil
+      _ -> {field, "role #{key} must be a string"}
+    end
+  end
+
+  defp validate_agent_role_positive_integer(field, attrs, key) do
+    case Map.get(attrs, key) do
+      nil -> nil
+      value when is_integer(value) and value > 0 -> nil
+      _ -> {field, "role #{key} must be a positive integer"}
+    end
+  end
+
+  defp validate_agent_role_boolean(field, attrs, key) do
+    case Map.get(attrs, key) do
+      nil -> nil
+      value when is_boolean(value) -> nil
+      _ -> {field, "role #{key} must be a boolean"}
+    end
+  end
+
+  defp validate_agent_role_phase(field, attrs) do
+    case Map.get(attrs, "run") do
+      nil -> nil
+      "pre_dispatch" -> nil
+      _ -> {field, "role run must be pre_dispatch"}
+    end
   end
 
   defp changeset(attrs) do

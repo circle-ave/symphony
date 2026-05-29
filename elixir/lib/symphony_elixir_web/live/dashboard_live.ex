@@ -5,6 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.Orchestrator
   alias SymphonyElixir.Codex.Controls
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
@@ -68,6 +69,46 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_event("freeze-orchestrator", _params, socket) do
+    case Orchestrator.freeze(orchestrator(), reason: "dashboard restart freeze") do
+      :unavailable ->
+        {:noreply,
+         socket
+         |> assign(:control_notice, nil)
+         |> assign(:control_error, "Orchestrator is unavailable")}
+
+      _payload ->
+        :ok = ObservabilityPubSub.broadcast_update()
+
+        {:noreply,
+         socket
+         |> assign(:payload, load_payload())
+         |> assign(:control_notice, "Frozen")
+         |> assign(:control_error, nil)}
+    end
+  end
+
+  @impl true
+  def handle_event("resume-orchestrator", _params, socket) do
+    case Orchestrator.resume(orchestrator()) do
+      :unavailable ->
+        {:noreply,
+         socket
+         |> assign(:control_notice, nil)
+         |> assign(:control_error, "Orchestrator is unavailable")}
+
+      _payload ->
+        :ok = ObservabilityPubSub.broadcast_update()
+
+        {:noreply,
+         socket
+         |> assign(:payload, load_payload())
+         |> assign(:control_notice, "Resuming")
+         |> assign(:control_error, nil)}
+    end
+  end
+
+  @impl true
   def handle_event("inspect-session", %{"issue" => issue_identifier}, socket) do
     {:noreply, inspect_issue(socket, issue_identifier)}
   end
@@ -85,89 +126,156 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <section class="dashboard-shell">
-      <header class="hero-card">
-        <div class="hero-grid">
+      <aside class="dashboard-sidebar" aria-label="Dashboard navigation">
+        <div class="sidebar-brand">
+          <span class="brand-mark">S</span>
           <div>
-            <p class="eyebrow">
-              Symphony Observability
-            </p>
-            <h1 class="hero-title">
-              Operations Dashboard
-            </h1>
-            <p class="hero-copy">
-              Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
-            </p>
-          </div>
-
-          <div class="status-stack">
-            <button
-              type="button"
-              class="theme-toggle"
-              data-theme-toggle
-              aria-label="Toggle day and night theme"
-            >
-              <span data-theme-toggle-label>Theme</span>
-            </button>
-            <span class="status-badge status-badge-live">
-              <span class="status-badge-dot"></span>
-              Live
-            </span>
-            <span class="status-badge status-badge-offline">
-              <span class="status-badge-dot"></span>
-              Offline
-            </span>
+            <p class="eyebrow">Symphony</p>
+            <strong>Ops Dash</strong>
           </div>
         </div>
-      </header>
 
-      <section class="section-card controls-card">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title">Agent controls</h2>
-            <p class="section-copy">Model and reasoning effort for new Codex agent sessions.</p>
-          </div>
-          <%= if @control_notice do %>
-            <span class="control-status control-status-ok"><%= @control_notice %></span>
-          <% end %>
+        <nav class="sidebar-nav" aria-label="Dashboard sections">
+          <a class="sidebar-nav-item sidebar-nav-item-active" href="#overview">
+            <span>Overview</span>
+            <b class="numeric"><%= total_active_count(@payload) %></b>
+          </a>
+          <a class="sidebar-nav-item" href="#agents">
+            <span>Agents</span>
+            <b class="numeric"><%= payload_count(@payload, :running) %></b>
+          </a>
+          <a class="sidebar-nav-item" href="#operator-roles">
+            <span>Roles</span>
+            <b class="numeric"><%= length(agent_roles(@payload)) %></b>
+          </a>
+          <a class="sidebar-nav-item" href="#queue">
+            <span>Queue</span>
+            <b class="numeric"><%= queue_count(@payload) %></b>
+          </a>
+          <a class="sidebar-nav-item" href="#controls">
+            <span>Controls</span>
+            <b>Ops</b>
+          </a>
+        </nav>
+
+        <div class="sidebar-panel">
+          <span class="metric-label">Runtime</span>
+          <strong class="numeric"><%= sidebar_runtime(@payload, @now) %></strong>
+          <small><%= sidebar_host(@payload) %></small>
         </div>
+      </aside>
 
-        <%= if control_error?(@controls) do %>
-          <p class="empty-state"><%= @controls.error.message %></p>
-        <% else %>
-          <form class="control-form" phx-submit="update-controls">
-            <label class="control-field">
-              <span>Model</span>
-              <input
-                type="text"
-                name="controls[model]"
-                value={@controls.model || ""}
-                placeholder="default"
-              />
-            </label>
+      <div class="dashboard-main">
+        <header class="topbar hero-card">
+          <div class="hero-grid">
+            <div>
+              <p class="eyebrow">
+                Symphony Observability
+              </p>
+              <h1 class="hero-title">
+                Operations Dashboard
+              </h1>
+              <p class="hero-copy">
+                Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
+              </p>
+            </div>
 
-            <label class="control-field">
-              <span>Reasoning effort</span>
-              <select
-                id={"agent-reasoning-effort-#{@controls.reasoning_effort || "default"}"}
-                name="controls[reasoning_effort]"
+            <div class="status-stack">
+              <button
+                type="button"
+                class="theme-toggle"
+                data-theme-toggle
+                aria-label="Toggle day and night theme"
               >
-                <%= Phoenix.HTML.Form.options_for_select(
-                  reasoning_effort_options(@controls),
-                  @controls.reasoning_effort || ""
-                ) %>
-              </select>
-            </label>
+                <span data-theme-toggle-label>Theme</span>
+              </button>
+              <span class="status-badge status-badge-live">
+                <span class="status-badge-dot"></span>
+                Live
+              </span>
+              <span class="status-badge status-badge-offline">
+                <span class="status-badge-dot"></span>
+                Offline
+              </span>
+              <%= if frozen?(@payload) do %>
+                <span class="status-badge status-badge-frozen">
+                  <span class="status-badge-dot"></span>
+                  Frozen
+                </span>
+              <% end %>
+            </div>
+          </div>
+        </header>
 
-            <button type="submit">Apply</button>
-          </form>
+        <main class="dashboard-content">
+          <section class="section-card controls-card" id="controls">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Agent controls</h2>
+                <p class="section-copy">Model and reasoning effort for new Codex agent sessions.</p>
+              </div>
+              <%= if @control_notice do %>
+                <span class="control-status control-status-ok"><%= @control_notice %></span>
+              <% end %>
+            </div>
 
-          <%= if @control_error do %>
-            <p class="control-status control-status-error"><%= @control_error %></p>
-          <% end %>
+            <%= if control_error?(@controls) do %>
+              <p class="empty-state"><%= @controls.error.message %></p>
+            <% else %>
+              <form class="control-form" phx-submit="update-controls">
+                <label class="control-field">
+                  <span>Model</span>
+                  <input
+                    type="text"
+                    name="controls[model]"
+                    value={@controls.model || ""}
+                    placeholder="default"
+                  />
+                </label>
 
-          <pre class="code-panel command-panel"><%= @controls.command %></pre>
-        <% end %>
-      </section>
+                <label class="control-field">
+                  <span>Reasoning effort</span>
+                  <select
+                    id={"agent-reasoning-effort-#{@controls.reasoning_effort || "default"}"}
+                    name="controls[reasoning_effort]"
+                  >
+                    <%= Phoenix.HTML.Form.options_for_select(
+                      reasoning_effort_options(@controls),
+                      @controls.reasoning_effort || ""
+                    ) %>
+                  </select>
+                </label>
+
+                <button type="submit">Apply</button>
+              </form>
+
+              <%= if @control_error do %>
+                <p class="control-status control-status-error"><%= @control_error %></p>
+              <% end %>
+
+              <pre class="code-panel command-panel"><%= @controls.command %></pre>
+
+              <div class="restart-controls">
+                <div>
+                  <span class="metric-label">Restart state</span>
+                  <strong><%= if frozen?(@payload), do: "Frozen", else: "Dispatching" %></strong>
+                  <%= if frozen?(@payload) && @payload.freeze[:reason] do %>
+                    <small><%= @payload.freeze.reason %></small>
+                  <% end %>
+                </div>
+
+                <%= if frozen?(@payload) do %>
+                  <button type="button" class="secondary" phx-click="resume-orchestrator">
+                    Resume
+                  </button>
+                <% else %>
+                  <button type="button" class="secondary" phx-click="freeze-orchestrator">
+                    Freeze
+                  </button>
+                <% end %>
+              </div>
+            <% end %>
+          </section>
 
       <%= if @payload[:error] do %>
         <section class="error-card">
@@ -179,7 +287,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </p>
         </section>
       <% else %>
-        <section class="ops-summary-grid">
+        <section class="ops-summary-grid" id="overview">
           <article class="section-card chart-card">
             <div class="mini-header">
               <div>
@@ -251,9 +359,55 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <p class="rate-limit-line"><%= rate_limit_summary(@payload.rate_limits) %></p>
             </div>
           </article>
-        </section>
+         </section>
 
-        <section class="section-card agent-section">
+         <section class="section-card role-section" id="operator-roles">
+           <div class="mini-header">
+             <div>
+               <h2 class="section-title">Operator roles</h2>
+               <p class="section-copy">Scheduled non-ticket roles, last result, and next due time.</p>
+             </div>
+             <span class="metric-pill numeric"><%= length(agent_roles(@payload)) %></span>
+           </div>
+
+           <%= if agent_roles(@payload) == [] do %>
+             <p class="empty-state">No operator roles configured.</p>
+           <% else %>
+             <div class="role-grid">
+               <article :for={role <- agent_roles(@payload)} class="role-card">
+                 <div class="role-card-head">
+                   <div>
+                     <span class="issue-id"><%= role.name %></span>
+                     <span class="muted"><%= role.run %></span>
+                   </div>
+                   <span class={role_status_class(role.status)}>
+                     <%= role.status %>
+                   </span>
+                 </div>
+
+                 <div class="agent-meta-grid">
+                   <span>
+                     <small>Next</small>
+                     <b class="numeric"><%= format_millis(role.next_due_in_ms) %></b>
+                   </span>
+                   <span>
+                     <small>Last</small>
+                     <b class="numeric"><%= format_millis(role.last_duration_ms) %></b>
+                   </span>
+                   <span>
+                     <small>Exit</small>
+                     <b class="numeric"><%= role.last_exit_status || "n/a" %></b>
+                   </span>
+                 </div>
+
+                 <p class="activity-summary"><%= role_detail(role) %></p>
+                 <p class="role-path mono"><%= role.cwd %></p>
+               </article>
+             </div>
+           <% end %>
+         </section>
+
+         <section class="section-card agent-section" id="agents">
           <div class="mini-header">
             <div>
               <h2 class="section-title">Agents</h2>
@@ -428,7 +582,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </section>
         <% end %>
 
-        <section class="queue-grid">
+        <section class="queue-grid" id="queue">
           <article class="section-card queue-card">
             <div class="mini-header">
               <div>
@@ -489,6 +643,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </article>
         </section>
       <% end %>
+        </main>
+      </div>
     </section>
     """
   end
@@ -587,6 +743,53 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp total_active(payload) do
     payload.counts.running + payload.counts.retrying + payload.counts.blocked
   end
+
+  defp total_active_count(payload) do
+    payload_count(payload, :running) + payload_count(payload, :retrying) + payload_count(payload, :blocked)
+  end
+
+  defp queue_count(payload), do: payload_count(payload, :retrying) + payload_count(payload, :blocked)
+
+  defp payload_count(%{counts: counts}, key) when is_map(counts), do: Map.get(counts, key, 0) || 0
+  defp payload_count(_payload, _key), do: 0
+
+  defp sidebar_runtime(%{codex_totals: _totals, running: running} = payload, now) when is_list(running) do
+    format_runtime_seconds(total_runtime_seconds(payload, now))
+  end
+
+  defp sidebar_runtime(_payload, _now), do: "n/a"
+
+  defp sidebar_host(%{system: %{host: host}}) when is_binary(host), do: host
+  defp sidebar_host(_payload), do: "snapshot offline"
+
+  defp frozen?(%{freeze: %{active: true}}), do: true
+  defp frozen?(_payload), do: false
+
+  defp agent_roles(%{agent_roles: roles}) when is_list(roles), do: roles
+  defp agent_roles(_payload), do: []
+
+  defp role_status_class(status) do
+    normalized =
+      status
+      |> to_string()
+      |> String.replace(~r/[^a-zA-Z0-9_-]/, "-")
+      |> String.downcase()
+
+    ["role-status", "role-status-#{normalized}"]
+  end
+
+  defp role_detail(role) do
+    role.last_error || role.last_output || role.command || "No result yet."
+  end
+
+  defp format_millis(nil), do: "n/a"
+
+  defp format_millis(ms) when is_integer(ms) do
+    seconds = div(max(ms, 0) + 999, 1_000)
+    "#{seconds}s"
+  end
+
+  defp format_millis(_ms), do: "n/a"
 
   defp workload_ring_style(payload) do
     total = total_active(payload)

@@ -27,7 +27,9 @@ defmodule SymphonyElixirWeb.Presenter do
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
           codex_totals: snapshot.codex_totals,
-          rate_limits: snapshot.rate_limits
+          rate_limits: snapshot.rate_limits,
+          freeze: freeze_payload(Map.get(snapshot, :freeze)),
+          agent_roles: Enum.map(Map.get(snapshot, :agent_roles, []), &agent_role_payload/1)
         }
 
       :timeout ->
@@ -64,7 +66,26 @@ defmodule SymphonyElixirWeb.Presenter do
         {:error, :unavailable}
 
       payload ->
-        {:ok, Map.update!(payload, :requested_at, &DateTime.to_iso8601/1)}
+        {:ok, serialize_orchestrator_action_payload(payload)}
+    end
+  end
+
+  @spec freeze_request_payload(GenServer.name(), String.t() | nil) ::
+          {:ok, map()} | {:error, :unavailable}
+  def freeze_request_payload(orchestrator, reason \\ nil) do
+    opts = if is_binary(reason), do: [reason: reason], else: []
+
+    case Orchestrator.freeze(orchestrator, opts) do
+      :unavailable -> {:error, :unavailable}
+      payload -> {:ok, serialize_orchestrator_action_payload(payload)}
+    end
+  end
+
+  @spec resume_request_payload(GenServer.name()) :: {:ok, map()} | {:error, :unavailable}
+  def resume_request_payload(orchestrator) do
+    case Orchestrator.resume(orchestrator) do
+      :unavailable -> {:error, :unavailable}
+      payload -> {:ok, serialize_orchestrator_action_payload(payload)}
     end
   end
 
@@ -142,6 +163,8 @@ defmodule SymphonyElixirWeb.Presenter do
       delay_type: Map.get(entry, :delay_type),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
+      resume_checkpoint_path: Map.get(entry, :resume_checkpoint_path),
+      resume_checkpoint_error: Map.get(entry, :resume_checkpoint_error),
       resource_status: Map.get(entry, :resource_status),
       activity: activity_payload(:retrying, entry, nil)
     }
@@ -165,6 +188,26 @@ defmodule SymphonyElixirWeb.Presenter do
       last_message: last_message,
       last_event_at: iso8601(entry.last_codex_timestamp),
       stream_window: stream_window_payload(entry, last_message)
+    }
+  end
+
+  defp agent_role_payload(entry) do
+    %{
+      name: Map.get(entry, :name),
+      enabled: Map.get(entry, :enabled),
+      status: Map.get(entry, :status),
+      run: Map.get(entry, :run),
+      cwd: Map.get(entry, :cwd),
+      command: Map.get(entry, :command),
+      interval_ms: Map.get(entry, :interval_ms),
+      timeout_ms: Map.get(entry, :timeout_ms),
+      next_due_in_ms: Map.get(entry, :next_due_in_ms),
+      last_started_at: iso8601(Map.get(entry, :last_started_at)),
+      last_finished_at: iso8601(Map.get(entry, :last_finished_at)),
+      last_duration_ms: Map.get(entry, :last_duration_ms),
+      last_exit_status: Map.get(entry, :last_exit_status),
+      last_output: Map.get(entry, :last_output),
+      last_error: Map.get(entry, :last_error)
     }
   end
 
@@ -198,10 +241,37 @@ defmodule SymphonyElixirWeb.Presenter do
       delay_type: Map.get(retry, :delay_type),
       worker_host: Map.get(retry, :worker_host),
       workspace_path: Map.get(retry, :workspace_path),
+      resume_checkpoint_path: Map.get(retry, :resume_checkpoint_path),
+      resume_checkpoint_error: Map.get(retry, :resume_checkpoint_error),
       resource_status: Map.get(retry, :resource_status),
       activity: activity_payload(:retrying, retry, nil)
     }
   end
+
+  defp freeze_payload(%{} = freeze) do
+    freeze
+    |> serialize_orchestrator_action_payload()
+    |> Map.put_new(:active, false)
+  end
+
+  defp freeze_payload(_freeze), do: %{active: false}
+
+  defp serialize_orchestrator_action_payload(payload) when is_map(payload) do
+    Map.new(payload, fn {key, value} -> {key, serialize_orchestrator_value(value)} end)
+  end
+
+  defp serialize_orchestrator_action_payload(payload), do: payload
+
+  defp serialize_orchestrator_value(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+  defp serialize_orchestrator_value(%NaiveDateTime{} = datetime), do: NaiveDateTime.to_iso8601(datetime)
+
+  defp serialize_orchestrator_value(value) when is_list(value),
+    do: Enum.map(value, &serialize_orchestrator_value/1)
+
+  defp serialize_orchestrator_value(value) when is_map(value),
+    do: serialize_orchestrator_action_payload(value)
+
+  defp serialize_orchestrator_value(value), do: value
 
   defp blocked_issue_payload(blocked) do
     %{

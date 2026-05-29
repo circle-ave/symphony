@@ -112,6 +112,7 @@ defmodule SymphonyElixir.TestSupport do
           cloud_gate_retry_cooldown_ms: 1_800_000,
           local_bench_gate_retry_cooldown_ms: 60_000,
           max_concurrent_agents_by_state: %{},
+          agent_roles: %{},
           codex_command: "codex app-server",
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
@@ -154,6 +155,7 @@ defmodule SymphonyElixir.TestSupport do
     cloud_gate_retry_cooldown_ms = Keyword.get(config, :cloud_gate_retry_cooldown_ms)
     local_bench_gate_retry_cooldown_ms = Keyword.get(config, :local_bench_gate_retry_cooldown_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
+    agent_roles = Keyword.get(config, :agent_roles)
     codex_command = Keyword.get(config, :codex_command)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
@@ -199,6 +201,7 @@ defmodule SymphonyElixir.TestSupport do
         "  cloud_gate_retry_cooldown_ms: #{yaml_value(cloud_gate_retry_cooldown_ms)}",
         "  local_bench_gate_retry_cooldown_ms: #{yaml_value(local_bench_gate_retry_cooldown_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
+        "  roles: #{yaml_value(agent_roles)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",
         "  approval_policy: #{yaml_value(codex_approval_policy)}",

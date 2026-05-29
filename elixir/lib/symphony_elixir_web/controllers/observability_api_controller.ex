@@ -61,6 +61,32 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec freeze(Conn.t(), map()) :: Conn.t()
+  def freeze(conn, params) do
+    case Presenter.freeze_request_payload(orchestrator(), Map.get(params, "reason")) do
+      {:ok, payload} ->
+        conn
+        |> put_status(202)
+        |> json(payload)
+
+      {:error, :unavailable} ->
+        error_response(conn, 503, "orchestrator_unavailable", "Orchestrator is unavailable")
+    end
+  end
+
+  @spec resume(Conn.t(), map()) :: Conn.t()
+  def resume(conn, _params) do
+    case Presenter.resume_request_payload(orchestrator()) do
+      {:ok, payload} ->
+        conn
+        |> put_status(202)
+        |> json(payload)
+
+      {:error, :unavailable} ->
+        error_response(conn, 503, "orchestrator_unavailable", "Orchestrator is unavailable")
+    end
+  end
+
   @spec reload_version(Conn.t(), map()) :: Conn.t()
   def reload_version(conn, _params) do
     json(conn, StaticAssets.reload_version_payload())

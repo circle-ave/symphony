@@ -75,6 +75,32 @@ defmodule SymphonyElixir.ExtensionsTest do
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
     end
+
+    def handle_call({:freeze, opts}, _from, state) do
+      reason = Keyword.get(opts, :reason, "operator restart")
+
+      {:reply,
+       Keyword.get(state, :freeze, %{
+         status: "frozen",
+         already_frozen: false,
+         frozen_at: DateTime.utc_now(),
+         reason: reason,
+         stopped_running_count: 0,
+         retrying_count: 0,
+         resume_checkpoints: []
+       }), state}
+    end
+
+    def handle_call(:resume, _from, state) do
+      {:reply,
+       Keyword.get(state, :resume, %{
+         status: "resuming",
+         resumed: true,
+         resumed_at: DateTime.utc_now(),
+         released_retry_count: 0,
+         operations: ["poll", "reconcile"]
+       }), state}
+    end
   end
 
   setup do
@@ -391,6 +417,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "resource_status" => nil,
+                 "resume_checkpoint_path" => nil,
+                 "resume_checkpoint_error" => nil,
                  "activity" => state_payload["retrying"] |> List.first() |> Map.fetch!("activity")
                }
              ],
@@ -418,7 +446,27 @@ defmodule SymphonyElixir.ExtensionsTest do
                "total_tokens" => 12,
                "seconds_running" => 42.5
              },
-             "rate_limits" => %{"primary" => %{"remaining" => 11}}
+             "rate_limits" => %{"primary" => %{"remaining" => 11}},
+             "freeze" => %{"active" => false},
+             "agent_roles" => [
+               %{
+                 "name" => "waiting_blocker_audit",
+                 "enabled" => true,
+                 "status" => "ok",
+                 "run" => "pre_dispatch",
+                 "cwd" => "/workspaces/operator",
+                 "command" => "scripts/symphony_waiting_blocker_audit.sh --fix",
+                 "interval_ms" => 300_000,
+                 "timeout_ms" => 300_000,
+                 "next_due_in_ms" => 120_000,
+                 "last_started_at" => state_payload["agent_roles"] |> List.first() |> Map.fetch!("last_started_at"),
+                 "last_finished_at" => state_payload["agent_roles"] |> List.first() |> Map.fetch!("last_finished_at"),
+                 "last_duration_ms" => 1_250,
+                 "last_exit_status" => 0,
+                 "last_output" => "CIR-92 live-cloud-hash-blocker",
+                 "last_error" => nil
+               }
+             ]
            }
 
     conn = get(build_conn(), "/api/v1/controls")
@@ -501,6 +549,18 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert %{"queued" => true, "coalesced" => false, "operations" => ["poll", "reconcile"]} =
              json_response(conn, 202)
+
+    conn = post(build_conn(), "/api/v1/freeze", %{"reason" => "test restart"})
+
+    assert %{
+             "status" => "frozen",
+             "reason" => "test restart",
+             "stopped_running_count" => 0
+           } = json_response(conn, 202)
+
+    conn = post(build_conn(), "/api/v1/resume", %{})
+
+    assert %{"status" => "resuming", "resumed" => true} = json_response(conn, 202)
   end
 
   test "phoenix observability api exposes a matching local codex session log tail" do
@@ -716,6 +776,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "turn blocked: waiting for user input"
     assert html =~ "Runtime"
     assert html =~ "Agent controls"
+    assert html =~ "Operator roles"
+    assert html =~ "waiting_blocker_audit"
+    assert html =~ "CIR-92 live-cloud-hash-blocker"
     assert html =~ "Workload"
     assert html =~ "Capacity"
     assert html =~ "Throughput"
@@ -957,7 +1020,26 @@ defmodule SymphonyElixir.ExtensionsTest do
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
-      rate_limits: %{"primary" => %{"remaining" => 11}}
+      rate_limits: %{"primary" => %{"remaining" => 11}},
+      agent_roles: [
+        %{
+          name: "waiting_blocker_audit",
+          enabled: true,
+          status: "ok",
+          run: "pre_dispatch",
+          cwd: "/workspaces/operator",
+          command: "scripts/symphony_waiting_blocker_audit.sh --fix",
+          interval_ms: 300_000,
+          timeout_ms: 300_000,
+          next_due_in_ms: 120_000,
+          last_started_at: DateTime.utc_now(),
+          last_finished_at: DateTime.utc_now(),
+          last_duration_ms: 1_250,
+          last_exit_status: 0,
+          last_output: "CIR-92 live-cloud-hash-blocker",
+          last_error: nil
+        }
+      ]
     }
   end
 

@@ -11,6 +11,7 @@ defmodule SymphonyElixir.AgentRunner do
     cloud_gate: Path.join([".symphony", "cloud-gate-blocked"]),
     local_bench_gate: Path.join([".symphony", "local-bench-gate-blocked"])
   }
+  @resume_checkpoint_path Path.join([".symphony", "resume.json"])
   @comment_reply_marker "<!-- symphony-comment-reply -->"
 
   @type worker_host :: String.t() | nil
@@ -45,6 +46,7 @@ defmodule SymphonyElixir.AgentRunner do
 
     case Workspace.create_for_issue(issue, worker_host) do
       {:ok, workspace} ->
+        opts = maybe_load_resume_checkpoint(opts, workspace, issue)
         send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
         try do
@@ -89,6 +91,42 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
+
+  defp maybe_load_resume_checkpoint(opts, workspace, %Issue{} = issue) when is_binary(workspace) do
+    if Keyword.has_key?(opts, :resume_checkpoint) do
+      opts
+    else
+      Keyword.put(opts, :resume_checkpoint, load_resume_checkpoint(workspace, issue))
+    end
+  end
+
+  defp maybe_load_resume_checkpoint(opts, _workspace, _issue), do: opts
+
+  defp load_resume_checkpoint(workspace, %Issue{} = issue) do
+    checkpoint_path = Path.join(workspace, @resume_checkpoint_path)
+
+    with {:ok, body} <- File.read(checkpoint_path),
+         {:ok, %{} = checkpoint} <- Jason.decode(body),
+         true <- resume_checkpoint_matches_issue?(checkpoint, issue) do
+      Map.put(checkpoint, "path", checkpoint_path)
+    else
+      _ -> nil
+    end
+  end
+
+  defp resume_checkpoint_matches_issue?(checkpoint, %Issue{id: issue_id, identifier: identifier}) do
+    checkpoint_issue = checkpoint_value(checkpoint, "issue") || %{}
+    checkpoint_issue_id = checkpoint_value(checkpoint_issue, "id")
+    checkpoint_identifier = checkpoint_value(checkpoint_issue, "identifier")
+
+    checkpoint_issue_id == issue_id or checkpoint_identifier == identifier
+  end
+
+  defp checkpoint_value(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key) || Map.get(map, String.to_atom(key))
+  rescue
+    ArgumentError -> Map.get(map, key)
+  end
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)

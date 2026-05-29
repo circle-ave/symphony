@@ -166,6 +166,34 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     refute backoff_line =~ "\\n"
   end
 
+  test "operator role section renders current status" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil,
+         agent_roles: [
+           %{
+             name: "waiting_blocker_audit",
+             status: "ok",
+             run: "pre_dispatch",
+             next_due_in_ms: 120_000,
+             last_duration_ms: 1_250,
+             last_output: "CIR-92 live-cloud-hash-blocker\nCIR-94 live-cloud-hash-blocker"
+           }
+         ]
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+
+    assert rendered =~ "Operator roles"
+    assert rendered =~ "waiting_blocker_audit"
+    assert rendered =~ "120.000s"
+    assert rendered =~ "detail=CIR-92 live-cloud-hash-blocker CIR-94 live-cloud-hash-blocker"
+  end
+
   test "snapshot fixture: unlimited credits variant" do
     snapshot_data =
       {:ok,

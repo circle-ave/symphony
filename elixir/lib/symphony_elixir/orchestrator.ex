@@ -7,15 +7,22 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace, Workflow}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @agent_role_default_interval_ms 300_000
+  @agent_role_default_timeout_ms 60_000
+  @agent_role_default_phase "pre_dispatch"
+  @agent_role_log_output_limit 2_048
   @resource_gate_released_retry_delay_ms 1_000
   @resource_gate_slot_retry_delay_ms 1_000
   @linear_rate_limit_resume_buffer_ms 1_000
   @terminal_workspace_cleanup_interval_ms 600_000
+  @resume_checkpoint_path Path.join([".symphony", "resume.json"])
+  @frozen_restart_delay_type :frozen_restart
+  @frozen_restart_error "frozen for operator restart; resume after restart"
   @resource_gate_markers %{
     cloud_gate: Path.join([".symphony", "cloud-gate-blocked"]),
     local_bench_gate: Path.join([".symphony", "local-bench-gate-blocked"])
@@ -49,6 +56,7 @@ defmodule SymphonyElixir.Orchestrator do
       :tick_timer_ref,
       :tick_token,
       :terminal_workspace_cleanup_due_at_ms,
+      :freeze,
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
@@ -56,6 +64,8 @@ defmodule SymphonyElixir.Orchestrator do
       retry_attempts: %{},
       codex_totals: nil,
       codex_rate_limits: nil,
+      agent_role_due_at_ms: %{},
+      agent_role_status: %{},
       comment_reply_seen: nil,
       comment_reply_reserve_active: false
     ]
@@ -96,6 +106,15 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
+  def handle_info({:tick, tick_token}, %{tick_token: tick_token, freeze: %{active: true}} = state)
+      when is_reference(tick_token) do
+    state =
+      %{state | tick_timer_ref: nil, tick_token: nil, next_poll_due_at_ms: nil, poll_check_in_progress: false}
+
+    notify_dashboard()
+    {:noreply, state}
+  end
+
   def handle_info({:tick, tick_token}, %{tick_token: tick_token} = state)
       when is_reference(tick_token) do
     state = refresh_runtime_config(state)
@@ -115,6 +134,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:tick, _tick_token}, state), do: {:noreply, state}
 
+  def handle_info(:tick, %{freeze: %{active: true}} = state) do
+    state =
+      %{state | tick_timer_ref: nil, tick_token: nil, next_poll_due_at_ms: nil, poll_check_in_progress: false}
+
+    notify_dashboard()
+    {:noreply, state}
+  end
+
   def handle_info(:tick, state) do
     state = refresh_runtime_config(state)
 
@@ -131,10 +158,17 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
+  def handle_info(:run_poll_cycle, %{freeze: %{active: true}} = state) do
+    state = %{state | poll_check_in_progress: false}
+    notify_dashboard()
+    {:noreply, state}
+  end
+
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
     state = cleanup_orphaned_resource_locks(state)
     state = maybe_run_terminal_workspace_cleanup(state)
+    state = maybe_run_due_agent_roles(state, :pre_dispatch)
     state = wake_released_resource_gate_retries(state)
     {state, poll_delay_ms} = maybe_dispatch(state)
     state = schedule_tick(state, poll_delay_ms || state.poll_interval_ms)
@@ -205,6 +239,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+
+  def handle_info({:retry_issue, _issue_id, _retry_token}, %{freeze: %{active: true}} = state) do
+    notify_dashboard()
+    {:noreply, state}
+  end
 
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
@@ -286,6 +325,167 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path)
     })
+  end
+
+  defp maybe_run_due_agent_roles(%State{} = state, phase) when is_atom(phase) do
+    run_due_agent_roles(state, phase, System.monotonic_time(:millisecond))
+  end
+
+  defp run_due_agent_roles(%State{} = state, phase, now_ms)
+       when is_atom(phase) and is_integer(now_ms) do
+    Config.settings!().agent.roles
+    |> Enum.reduce(state, fn {role_name, role_config}, state_acc ->
+      maybe_run_due_agent_role(state_acc, role_name, role_config, phase, now_ms)
+    end)
+  end
+
+  defp maybe_run_due_agent_role(%State{} = state, role_name, role_config, phase, now_ms)
+       when is_binary(role_name) and is_map(role_config) do
+    if agent_role_due?(state, role_name, role_config, phase, now_ms) do
+      started_at = DateTime.utc_now()
+      started_ms = System.monotonic_time(:millisecond)
+
+      result = run_agent_role(role_name, role_config)
+
+      next_due_ms =
+        max(now_ms, System.monotonic_time(:millisecond)) + agent_role_interval_ms(role_config)
+
+      Logger.debug("Agent role next due role=#{role_name} next_due_in_ms=#{agent_role_interval_ms(role_config)} result=#{inspect(result)}")
+
+      %{
+        state
+        | agent_role_due_at_ms: Map.put(state.agent_role_due_at_ms, role_name, next_due_ms),
+          agent_role_status:
+            Map.put(
+              state.agent_role_status,
+              role_name,
+              agent_role_status_from_result(role_config, result, started_at, started_ms)
+            )
+      }
+    else
+      state
+    end
+  end
+
+  defp maybe_run_due_agent_role(state, _role_name, _role_config, _phase, _now_ms), do: state
+
+  defp agent_role_due?(
+         %State{agent_role_due_at_ms: due_at_by_role},
+         role_name,
+         role_config,
+         phase,
+         now_ms
+       ) do
+    agent_role_enabled?(role_config) and
+      agent_role_phase(role_config) == Atom.to_string(phase) and
+      now_ms >= Map.get(due_at_by_role, role_name, now_ms)
+  end
+
+  defp agent_role_enabled?(%{"enabled" => false}), do: false
+  defp agent_role_enabled?(_role_config), do: true
+
+  defp agent_role_phase(role_config) when is_map(role_config) do
+    Map.get(role_config, "run", @agent_role_default_phase)
+  end
+
+  defp agent_role_interval_ms(role_config) when is_map(role_config) do
+    Map.get(role_config, "interval_ms", @agent_role_default_interval_ms)
+  end
+
+  defp agent_role_timeout_ms(role_config) when is_map(role_config) do
+    Map.get(role_config, "timeout_ms", @agent_role_default_timeout_ms)
+  end
+
+  defp run_agent_role(role_name, role_config) do
+    command = Map.fetch!(role_config, "command")
+    cwd = agent_role_cwd(role_config)
+    timeout_ms = agent_role_timeout_ms(role_config)
+
+    if File.dir?(cwd) do
+      Logger.info("Running agent role role=#{role_name} run=#{agent_role_phase(role_config)} cwd=#{cwd} timeout_ms=#{timeout_ms}")
+      run_agent_role_command(role_name, command, cwd, timeout_ms)
+    else
+      Logger.warning("Skipping agent role role=#{role_name}; cwd does not exist: #{cwd}")
+      %{status: "skipped", exit_status: nil, output: nil, error: "cwd missing: #{cwd}"}
+    end
+  end
+
+  defp run_agent_role_command(role_name, command, cwd, timeout_ms) do
+    task =
+      Task.async(fn ->
+        System.cmd("sh", ["-lc", command], cd: cwd, stderr_to_stdout: true)
+      end)
+
+    case Task.yield(task, timeout_ms) do
+      {:ok, {output, 0}} ->
+        log_agent_role_success(role_name, output)
+        %{status: "ok", exit_status: 0, output: sanitize_agent_role_output(output), error: nil}
+
+      {:ok, {output, status}} ->
+        sanitized_output = sanitize_agent_role_output(output)
+        Logger.warning("Agent role failed role=#{role_name} status=#{status} output=#{inspect(sanitized_output)}")
+        %{status: "failed", exit_status: status, output: sanitized_output, error: "exited #{status}"}
+
+      {:exit, reason} ->
+        Logger.warning("Agent role crashed role=#{role_name} reason=#{inspect(reason)}")
+        %{status: "crashed", exit_status: nil, output: nil, error: inspect(reason)}
+
+      nil ->
+        Task.shutdown(task, :brutal_kill)
+        Logger.warning("Agent role timed out role=#{role_name} timeout_ms=#{timeout_ms}")
+        %{status: "timed_out", exit_status: nil, output: nil, error: "timed out after #{timeout_ms}ms"}
+    end
+  end
+
+  defp agent_role_status_from_result(role_config, result, started_at, started_ms) do
+    finished_at = DateTime.utc_now()
+    duration_ms = max(System.monotonic_time(:millisecond) - started_ms, 0)
+
+    %{
+      status: Map.get(result, :status, "unknown"),
+      run: agent_role_phase(role_config),
+      cwd: agent_role_cwd(role_config),
+      interval_ms: agent_role_interval_ms(role_config),
+      timeout_ms: agent_role_timeout_ms(role_config),
+      last_started_at: started_at,
+      last_finished_at: finished_at,
+      last_duration_ms: duration_ms,
+      last_exit_status: Map.get(result, :exit_status),
+      last_output: Map.get(result, :output),
+      last_error: Map.get(result, :error)
+    }
+  end
+
+  defp log_agent_role_success(role_name, output) do
+    case String.trim(IO.iodata_to_binary(output)) do
+      "" ->
+        Logger.info("Agent role completed role=#{role_name}")
+
+      _ ->
+        Logger.info("Agent role completed role=#{role_name} output=#{inspect(sanitize_agent_role_output(output))}")
+    end
+  end
+
+  defp agent_role_cwd(role_config) do
+    case Map.get(role_config, "cwd") do
+      cwd when is_binary(cwd) and cwd != "" ->
+        Path.expand(cwd)
+
+      _ ->
+        Workflow.workflow_file_path()
+        |> Path.dirname()
+        |> Path.expand()
+    end
+  end
+
+  defp sanitize_agent_role_output(output) do
+    binary_output = IO.iodata_to_binary(output)
+
+    if byte_size(binary_output) <= @agent_role_log_output_limit do
+      binary_output
+    else
+      binary_part(binary_output, 0, @agent_role_log_output_limit) <> "... (truncated)"
+    end
   end
 
   defp maybe_dispatch(%State{} = state) do
@@ -642,6 +842,25 @@ defmodule SymphonyElixir.Orchestrator do
   @spec should_dispatch_comment_reply_issue_for_test(Issue.t(), term()) :: boolean()
   def should_dispatch_comment_reply_issue_for_test(%Issue{} = issue, %State{} = state) do
     should_dispatch_comment_reply_issue?(issue, state, terminal_state_set())
+  end
+
+  @doc false
+  @spec run_due_agent_roles_for_test(State.t(), atom(), integer()) :: State.t()
+  def run_due_agent_roles_for_test(%State{} = state, phase, now_ms)
+      when is_atom(phase) and is_integer(now_ms) do
+    run_due_agent_roles(state, phase, now_ms)
+  end
+
+  @doc false
+  @spec freeze_for_test(State.t(), keyword()) :: {State.t(), map()}
+  def freeze_for_test(%State{} = state, opts \\ []) do
+    freeze_state(state, opts)
+  end
+
+  @doc false
+  @spec resume_for_test(State.t()) :: {State.t(), map()}
+  def resume_for_test(%State{} = state) do
+    resume_state(state)
   end
 
   @doc false
@@ -2455,6 +2674,34 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  @spec freeze(keyword()) :: map() | :unavailable
+  def freeze(opts \\ []) do
+    freeze(__MODULE__, opts)
+  end
+
+  @spec freeze(GenServer.server(), keyword()) :: map() | :unavailable
+  def freeze(server, opts) when is_list(opts) do
+    if Process.whereis(server) do
+      GenServer.call(server, {:freeze, opts})
+    else
+      :unavailable
+    end
+  end
+
+  @spec resume() :: map() | :unavailable
+  def resume do
+    resume(__MODULE__)
+  end
+
+  @spec resume(GenServer.server()) :: map() | :unavailable
+  def resume(server) do
+    if Process.whereis(server) do
+      GenServer.call(server, :resume)
+    else
+      :unavailable
+    end
+  end
+
   @spec snapshot() :: map() | :timeout | :unavailable
   def snapshot, do: snapshot(__MODULE__, 15_000)
 
@@ -2517,6 +2764,8 @@ defmodule SymphonyElixir.Orchestrator do
           delay_type: Map.get(retry, :delay_type),
           worker_host: Map.get(retry, :worker_host),
           workspace_path: Map.get(retry, :workspace_path),
+          resume_checkpoint_path: Map.get(retry, :resume_checkpoint_path),
+          resume_checkpoint_error: Map.get(retry, :resume_checkpoint_error),
           resource_status: resource_status_for_entry(retry)
         }
       end)
@@ -2548,11 +2797,37 @@ defmodule SymphonyElixir.Orchestrator do
        blocked: blocked,
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
+       freeze: state.freeze,
+       agent_roles: agent_role_snapshot_entries(state, now_ms),
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
          poll_interval_ms: state.poll_interval_ms
        }
+     }, state}
+  end
+
+  def handle_call({:freeze, opts}, _from, state) do
+    {state, payload} = freeze_state(state, opts)
+    notify_dashboard()
+    {:reply, payload, state}
+  end
+
+  def handle_call(:resume, _from, state) do
+    {state, payload} = resume_state(state)
+    notify_dashboard()
+    {:reply, payload, state}
+  end
+
+  def handle_call(:request_refresh, _from, %{freeze: %{active: true} = freeze} = state) do
+    {:reply,
+     %{
+       queued: false,
+       coalesced: true,
+       frozen: true,
+       frozen_at: Map.get(freeze, :frozen_at),
+       requested_at: DateTime.utc_now(),
+       operations: []
      }, state}
   end
 
@@ -2569,6 +2844,347 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  defp agent_role_snapshot_entries(%State{} = state, now_ms) do
+    Config.settings!().agent.roles
+    |> Enum.map(fn {role_name, role_config} ->
+      status = Map.get(state.agent_role_status, role_name, %{})
+      enabled? = agent_role_enabled?(role_config)
+      due_at_ms = Map.get(state.agent_role_due_at_ms, role_name, now_ms)
+
+      %{
+        name: role_name,
+        enabled: enabled?,
+        status: agent_role_snapshot_status(enabled?, status),
+        run: agent_role_phase(role_config),
+        cwd: Map.get(status, :cwd) || agent_role_cwd(role_config),
+        command: Map.get(role_config, "command"),
+        interval_ms: agent_role_interval_ms(role_config),
+        timeout_ms: agent_role_timeout_ms(role_config),
+        next_due_in_ms: agent_role_next_due_in_ms(enabled?, due_at_ms, now_ms),
+        last_started_at: Map.get(status, :last_started_at),
+        last_finished_at: Map.get(status, :last_finished_at),
+        last_duration_ms: Map.get(status, :last_duration_ms),
+        last_exit_status: Map.get(status, :last_exit_status),
+        last_output: Map.get(status, :last_output),
+        last_error: Map.get(status, :last_error)
+      }
+    end)
+  end
+
+  defp agent_role_snapshot_status(false, _status), do: "disabled"
+  defp agent_role_snapshot_status(true, status), do: Map.get(status, :status, "idle")
+
+  defp agent_role_next_due_in_ms(false, _due_at_ms, _now_ms), do: nil
+  defp agent_role_next_due_in_ms(true, due_at_ms, now_ms), do: max(0, due_at_ms - now_ms)
+
+  defp freeze_state(%State{freeze: %{active: true} = freeze} = state, _opts) do
+    {state,
+     %{
+       status: "frozen",
+       already_frozen: true,
+       frozen_at: Map.get(freeze, :frozen_at),
+       reason: Map.get(freeze, :reason),
+       stopped_running_count: 0,
+       resume_checkpoints: Map.get(freeze, :resume_checkpoints, [])
+     }}
+  end
+
+  defp freeze_state(%State{} = state, opts) do
+    now = DateTime.utc_now()
+    now_ms = System.monotonic_time(:millisecond)
+    reason = freeze_reason(opts)
+    running_issue_ids = Map.keys(state.running)
+
+    state =
+      state
+      |> cancel_tick_timer()
+      |> freeze_retry_attempt_timers(now_ms)
+
+    {state, frozen_running} =
+      Enum.reduce(state.running, {state, []}, fn {issue_id, running_entry}, {state_acc, acc} ->
+        checkpoint = write_resume_checkpoint(issue_id, running_entry, now, reason)
+        stop_running_task(Map.get(running_entry, :pid), Map.get(running_entry, :ref))
+
+        retry_entry =
+          frozen_restart_retry_entry(issue_id, running_entry, now_ms, checkpoint)
+
+        state_acc =
+          state_acc
+          |> record_session_completion_totals(running_entry)
+          |> put_in([Access.key!(:retry_attempts), issue_id], retry_entry)
+
+        {state_acc, [freeze_checkpoint_summary(issue_id, running_entry, checkpoint) | acc]}
+      end)
+
+    frozen_running = Enum.reverse(frozen_running)
+
+    freeze = %{
+      active: true,
+      frozen_at: now,
+      reason: reason,
+      stopped_running_count: length(frozen_running),
+      resume_checkpoints: frozen_running
+    }
+
+    state = %{
+      state
+      | running: %{},
+        blocked: Map.drop(state.blocked, running_issue_ids),
+        poll_check_in_progress: false,
+        freeze: freeze
+    }
+
+    {state,
+     %{
+       status: "frozen",
+       already_frozen: false,
+       frozen_at: now,
+       reason: reason,
+       stopped_running_count: length(frozen_running),
+       retrying_count: map_size(state.retry_attempts),
+       resume_checkpoints: frozen_running
+     }}
+  end
+
+  defp resume_state(%State{freeze: nil} = state) do
+    state =
+      state
+      |> cancel_tick_timer()
+      |> schedule_tick(0)
+
+    {state,
+     %{
+       status: "running",
+       resumed: false,
+       resumed_at: DateTime.utc_now(),
+       operations: ["poll", "reconcile"]
+     }}
+  end
+
+  defp resume_state(%State{} = state) do
+    retry_issue_ids = Map.keys(state.retry_attempts)
+
+    state =
+      state
+      |> cancel_tick_timer()
+      |> Map.merge(%{
+        freeze: nil,
+        retry_attempts: %{},
+        claimed: MapSet.difference(state.claimed, MapSet.new(retry_issue_ids)),
+        poll_check_in_progress: false
+      })
+      |> schedule_tick(0)
+
+    {state,
+     %{
+       status: "resuming",
+       resumed: true,
+       resumed_at: DateTime.utc_now(),
+       released_retry_count: length(retry_issue_ids),
+       operations: ["poll", "reconcile"]
+     }}
+  end
+
+  defp freeze_reason(opts) when is_list(opts) do
+    opts
+    |> Keyword.get(:reason, "operator restart")
+    |> normalize_freeze_reason()
+  end
+
+  defp freeze_reason(opts) when is_map(opts) do
+    opts
+    |> Map.get("reason", Map.get(opts, :reason, "operator restart"))
+    |> normalize_freeze_reason()
+  end
+
+  defp freeze_reason(_opts), do: "operator restart"
+
+  defp normalize_freeze_reason(reason) when is_binary(reason) do
+    reason
+    |> String.trim()
+    |> case do
+      "" -> "operator restart"
+      reason -> reason
+    end
+  end
+
+  defp normalize_freeze_reason(_reason), do: "operator restart"
+
+  defp cancel_tick_timer(%State{} = state) do
+    if is_reference(state.tick_timer_ref) do
+      Process.cancel_timer(state.tick_timer_ref)
+    end
+
+    %{state | tick_timer_ref: nil, tick_token: nil, next_poll_due_at_ms: nil}
+  end
+
+  defp freeze_retry_attempt_timers(%State{} = state, now_ms) when is_integer(now_ms) do
+    retry_attempts =
+      Map.new(state.retry_attempts, fn {issue_id, retry_entry} ->
+        if is_reference(Map.get(retry_entry, :timer_ref)) do
+          Process.cancel_timer(retry_entry.timer_ref)
+        end
+
+        retry_entry =
+          retry_entry
+          |> Map.put(:timer_ref, nil)
+          |> Map.put(:retry_token, nil)
+          |> Map.put(:due_at_ms, now_ms)
+          |> Map.update(:error, @frozen_restart_error, &(&1 || @frozen_restart_error))
+
+        {issue_id, retry_entry}
+      end)
+
+    %{state | retry_attempts: retry_attempts}
+  end
+
+  defp frozen_restart_retry_entry(issue_id, running_entry, now_ms, checkpoint) do
+    attempt =
+      running_entry
+      |> Map.get(:retry_attempt, 0)
+      |> case do
+        value when is_integer(value) and value > 0 -> value + 1
+        _ -> 1
+      end
+
+    %{
+      attempt: attempt,
+      timer_ref: nil,
+      retry_token: nil,
+      due_at_ms: now_ms,
+      identifier: Map.get(running_entry, :identifier, issue_id),
+      error: @frozen_restart_error,
+      worker_host: Map.get(running_entry, :worker_host),
+      workspace_path: Map.get(running_entry, :workspace_path),
+      delay_type: @frozen_restart_delay_type,
+      resume_checkpoint_path: Map.get(checkpoint, :path),
+      resume_checkpoint_error: Map.get(checkpoint, :error)
+    }
+  end
+
+  defp write_resume_checkpoint(issue_id, running_entry, now, reason) do
+    worker_host = Map.get(running_entry, :worker_host)
+    workspace_path = resume_workspace_path(running_entry)
+
+    cond do
+      is_binary(worker_host) and worker_host != "" ->
+        %{path: workspace_path, error: "remote worker checkpoints are not supported yet"}
+
+      !is_binary(workspace_path) or workspace_path == "" ->
+        %{path: nil, error: "workspace path unavailable"}
+
+      true ->
+        checkpoint_path = Path.join(workspace_path, @resume_checkpoint_path)
+        payload = resume_checkpoint_payload(issue_id, running_entry, workspace_path, now, reason)
+
+        with :ok <- File.mkdir_p(Path.dirname(checkpoint_path)),
+             {:ok, json} <- Jason.encode(payload, pretty: true),
+             :ok <- File.write(checkpoint_path, json <> "\n") do
+          %{path: checkpoint_path}
+        else
+          {:error, reason} -> %{path: checkpoint_path, error: inspect(reason)}
+          reason -> %{path: checkpoint_path, error: inspect(reason)}
+        end
+    end
+  end
+
+  defp resume_workspace_path(%{workspace_path: workspace_path}) when is_binary(workspace_path),
+    do: workspace_path
+
+  defp resume_workspace_path(%{identifier: identifier}) when is_binary(identifier) do
+    Path.join(Config.settings!().workspace.root, safe_workspace_identifier(identifier))
+  end
+
+  defp resume_workspace_path(_running_entry), do: nil
+
+  defp resume_checkpoint_payload(issue_id, running_entry, workspace_path, now, reason) do
+    issue = Map.get(running_entry, :issue)
+
+    %{
+      schema: "symphony.resume.v1",
+      frozen_at: datetime_iso8601(now),
+      reason: reason,
+      issue: %{
+        id: issue_id,
+        identifier: issue_value(issue, :identifier) || Map.get(running_entry, :identifier),
+        title: issue_value(issue, :title),
+        state: issue_value(issue, :state),
+        url: issue_value(issue, :url)
+      },
+      workspace_path: workspace_path,
+      worker_host: Map.get(running_entry, :worker_host),
+      session: %{
+        session_id: running_entry_session_id(running_entry),
+        turn_count: Map.get(running_entry, :turn_count, 0),
+        retry_attempt: Map.get(running_entry, :retry_attempt, 0),
+        started_at: datetime_iso8601(Map.get(running_entry, :started_at)),
+        runtime_seconds: running_seconds(Map.get(running_entry, :started_at), now)
+      },
+      codex: %{
+        last_event: resume_string(Map.get(running_entry, :last_codex_event)),
+        last_message: resume_last_message(running_entry),
+        last_event_at: datetime_iso8601(Map.get(running_entry, :last_codex_timestamp)),
+        stream_window: resume_stream_window(Map.get(running_entry, :codex_stream_window, [])),
+        tokens: %{
+          input_tokens: Map.get(running_entry, :codex_input_tokens, 0),
+          output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
+          total_tokens: Map.get(running_entry, :codex_total_tokens, 0)
+        }
+      }
+    }
+  end
+
+  defp freeze_checkpoint_summary(issue_id, running_entry, checkpoint) do
+    %{
+      issue_id: issue_id,
+      issue_identifier: Map.get(running_entry, :identifier, issue_id),
+      workspace_path: resume_workspace_path(running_entry),
+      resume_checkpoint_path: Map.get(checkpoint, :path),
+      resume_checkpoint_error: Map.get(checkpoint, :error)
+    }
+  end
+
+  defp issue_value(%Issue{} = issue, field), do: Map.get(issue, field)
+  defp issue_value(issue, field) when is_map(issue), do: Map.get(issue, field) || Map.get(issue, to_string(field))
+  defp issue_value(_issue, _field), do: nil
+
+  defp resume_last_message(running_entry) do
+    StatusDashboard.humanize_codex_message(%{
+      event: Map.get(running_entry, :last_codex_event),
+      message: Map.get(running_entry, :last_codex_message),
+      timestamp: Map.get(running_entry, :last_codex_timestamp)
+    })
+  end
+
+  defp resume_stream_window(stream_window) when is_list(stream_window) do
+    Enum.map(stream_window, fn
+      entry when is_map(entry) ->
+        %{
+          event: resume_string(Map.get(entry, :event) || Map.get(entry, "event")),
+          message: resume_string(Map.get(entry, :message) || Map.get(entry, "message")),
+          timestamp: datetime_iso8601(Map.get(entry, :timestamp) || Map.get(entry, "timestamp"))
+        }
+
+      entry ->
+        %{event: nil, message: resume_string(entry), timestamp: nil}
+    end)
+  end
+
+  defp resume_stream_window(_stream_window), do: []
+
+  defp datetime_iso8601(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+  defp datetime_iso8601(%NaiveDateTime{} = datetime), do: NaiveDateTime.to_iso8601(datetime)
+  defp datetime_iso8601(_datetime), do: nil
+
+  defp resume_string(nil), do: nil
+  defp resume_string(value) when is_binary(value), do: value
+  defp resume_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp resume_string(value), do: inspect(value, limit: 20, printable_limit: 240)
+
+  defp safe_workspace_identifier(identifier) when is_binary(identifier) do
+    String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")
   end
 
   defp blocked_issue_state(%{issue: %Issue{state: state}}), do: state

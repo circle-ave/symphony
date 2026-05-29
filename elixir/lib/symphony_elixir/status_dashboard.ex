@@ -317,7 +317,8 @@ defmodule SymphonyElixir.StatusDashboard do
              retrying: retrying,
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             agent_roles: Map.get(snapshot, :agent_roles, [])
            }},
           update_token_samples(token_samples, now_ms, total_tokens)
         }
@@ -346,6 +347,7 @@ defmodule SymphonyElixir.StatusDashboard do
         running_rows = format_running_rows(running, running_event_width)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
+        agent_role_section = format_agent_role_section(Map.get(snapshot, :agent_roles, []))
 
         ([
            colorize("╭─ SYMPHONY STATUS", @ansi_bold),
@@ -374,6 +376,7 @@ defmodule SymphonyElixir.StatusDashboard do
            running_to_backoff_spacer ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
+           agent_role_section ++
            [closing_border()])
         |> List.flatten()
         |> Enum.join("\n")
@@ -562,7 +565,8 @@ defmodule SymphonyElixir.StatusDashboard do
              retrying: retrying,
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             agent_roles: Map.get(snapshot, :agent_roles, [])
            }}
 
         _ ->
@@ -672,6 +676,66 @@ defmodule SymphonyElixir.StatusDashboard do
       error
   end
 
+  defp format_agent_role_section([]), do: []
+
+  defp format_agent_role_section(agent_roles) when is_list(agent_roles) do
+    ["│", colorize("├─ Operator roles", @ansi_bold), "│"] ++
+      (agent_roles
+       |> Enum.sort_by(&(Map.get(&1, :name) || ""))
+       |> Enum.map(&format_agent_role_summary/1))
+  end
+
+  defp format_agent_role_section(_agent_roles), do: []
+
+  defp format_agent_role_summary(role) do
+    name = Map.get(role, :name) || "unknown"
+    run = Map.get(role, :run) || "n/a"
+    status = Map.get(role, :status) || "idle"
+    next_due = format_agent_role_next_due(Map.get(role, :next_due_in_ms))
+    duration = format_agent_role_duration(Map.get(role, :last_duration_ms))
+    detail = format_agent_role_detail(role)
+
+    "│  " <>
+      status_dot(agent_role_status_color(status)) <>
+      " " <>
+      colorize(name, @ansi_cyan) <>
+      " " <>
+      colorize(status, agent_role_status_color(status)) <>
+      colorize(" run=", @ansi_dim) <>
+      colorize(run, @ansi_yellow) <>
+      colorize(" next=", @ansi_dim) <>
+      colorize(next_due, @ansi_cyan) <>
+      colorize(" last=", @ansi_dim) <>
+      colorize(duration, @ansi_magenta) <>
+      detail
+  end
+
+  defp agent_role_status_color("ok"), do: @ansi_green
+  defp agent_role_status_color("idle"), do: @ansi_gray
+  defp agent_role_status_color("disabled"), do: @ansi_gray
+  defp agent_role_status_color("failed"), do: @ansi_red
+  defp agent_role_status_color("timed_out"), do: @ansi_red
+  defp agent_role_status_color("crashed"), do: @ansi_red
+  defp agent_role_status_color("skipped"), do: @ansi_orange
+  defp agent_role_status_color(_status), do: @ansi_yellow
+
+  defp format_agent_role_next_due(nil), do: "n/a"
+  defp format_agent_role_next_due(due_in_ms) when is_integer(due_in_ms), do: next_in_words(due_in_ms)
+  defp format_agent_role_next_due(_due_in_ms), do: "n/a"
+
+  defp format_agent_role_duration(nil), do: "n/a"
+  defp format_agent_role_duration(duration_ms) when is_integer(duration_ms), do: next_in_words(duration_ms)
+  defp format_agent_role_duration(_duration_ms), do: "n/a"
+
+  defp format_agent_role_detail(role) do
+    detail = Map.get(role, :last_error) || Map.get(role, :last_output) || Map.get(role, :command)
+
+    case sanitize_inline_detail(detail) do
+      "" -> ""
+      sanitized -> " " <> colorize("detail=#{truncate(sanitized, 96)}", @ansi_dim)
+    end
+  end
+
   defp next_in_words(due_in_ms) when is_integer(due_in_ms) do
     secs = div(due_in_ms, 1000)
     millis = rem(due_in_ms, 1000)
@@ -700,6 +764,20 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_retry_error(_), do: ""
+
+  defp sanitize_inline_detail(detail) when is_binary(detail) do
+    detail
+    |> String.replace("\\r\\n", " ")
+    |> String.replace("\\r", " ")
+    |> String.replace("\\n", " ")
+    |> String.replace("\r\n", " ")
+    |> String.replace("\r", " ")
+    |> String.replace("\n", " ")
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+  end
+
+  defp sanitize_inline_detail(_detail), do: ""
 
   defp format_runtime_seconds(seconds) when is_integer(seconds) do
     mins = div(seconds, 60)

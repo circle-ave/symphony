@@ -36,6 +36,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
+    assert config.agent.roles == %{}
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
 
@@ -61,6 +62,35 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
     assert Config.settings!().agent.max_turns == 5
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_roles: %{
+        "waiting_blocker_audit" => %{
+          "command" => "echo ok",
+          "cwd" => System.tmp_dir!(),
+          "interval_ms" => 123,
+          "timeout_ms" => 456,
+          "run" => "pre_dispatch"
+        }
+      }
+    )
+
+    assert Config.settings!().agent.roles == %{
+             "waiting_blocker_audit" => %{
+               "command" => "echo ok",
+               "cwd" => System.tmp_dir!(),
+               "interval_ms" => 123,
+               "timeout_ms" => 456,
+               "run" => "pre_dispatch"
+             }
+           }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_roles: %{"bad" => %{"command" => "", "interval_ms" => 0}}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.roles"
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -111,6 +141,164 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
+  end
+
+  test "pre-dispatch agent roles run commands on their interval" do
+    role_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-role-#{System.unique_integer([:positive])}"
+      )
+
+    File.rm_rf!(role_root)
+    File.mkdir_p!(role_root)
+    on_exit(fn -> File.rm_rf(role_root) end)
+
+    role_log = Path.join(role_root, "role.log")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_roles: %{
+        "waiting_blocker_audit" => %{
+          "command" => "printf run >> role.log",
+          "cwd" => role_root,
+          "interval_ms" => 1_000,
+          "timeout_ms" => 5_000
+        }
+      }
+    )
+
+    state = %Orchestrator.State{agent_role_due_at_ms: %{}}
+    state = Orchestrator.run_due_agent_roles_for_test(state, :pre_dispatch, 100)
+
+    assert File.read!(role_log) == "run"
+    assert state.agent_role_status["waiting_blocker_audit"].status == "ok"
+    assert state.agent_role_status["waiting_blocker_audit"].last_exit_status == 0
+    assert is_integer(state.agent_role_status["waiting_blocker_audit"].last_duration_ms)
+
+    state = Orchestrator.run_due_agent_roles_for_test(state, :pre_dispatch, 101)
+    assert File.read!(role_log) == "run"
+
+    state = %{state | agent_role_due_at_ms: %{"waiting_blocker_audit" => 100}}
+    _state = Orchestrator.run_due_agent_roles_for_test(state, :pre_dispatch, 100)
+
+    assert File.read!(role_log) == "runrun"
+  end
+
+  test "freeze checkpoints running agents and resume reopens dispatch" do
+    workspace =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-freeze-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(workspace)
+    on_exit(fn -> File.rm_rf(workspace) end)
+
+    issue = %Issue{
+      id: "issue-freeze",
+      identifier: "MT-FREEZE",
+      title: "Freeze running agent",
+      state: "In Progress",
+      url: "https://linear.app/example/issue/MT-FREEZE"
+    }
+
+    pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        after
+          60_000 -> :ok
+        end
+      end)
+
+    ref = Process.monitor(pid)
+    started_at = DateTime.add(DateTime.utc_now(), -10, :second)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue.id => %{
+          pid: pid,
+          ref: ref,
+          identifier: issue.identifier,
+          issue: issue,
+          worker_host: nil,
+          workspace_path: workspace,
+          session_id: "thread-freeze",
+          last_codex_message: "working on restartable state",
+          last_codex_timestamp: DateTime.utc_now(),
+          last_codex_event: :notification,
+          codex_stream_window: [
+            %{event: :notification, message: "recent checkpoint evidence", timestamp: DateTime.utc_now()}
+          ],
+          codex_input_tokens: 10,
+          codex_output_tokens: 20,
+          codex_total_tokens: 30,
+          turn_count: 2,
+          retry_attempt: 1,
+          started_at: started_at
+        }
+      },
+      claimed: MapSet.new([issue.id]),
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    {frozen_state, payload} = Orchestrator.freeze_for_test(state, reason: "test freeze")
+
+    Process.sleep(20)
+    refute Process.alive?(pid)
+    refute_receive {:DOWN, ^ref, :process, ^pid, _reason}
+
+    assert payload.status == "frozen"
+    assert payload.stopped_running_count == 1
+    assert frozen_state.running == %{}
+    assert frozen_state.freeze.active == true
+
+    retry = frozen_state.retry_attempts[issue.id]
+    assert retry.delay_type == :frozen_restart
+    assert retry.timer_ref == nil
+    assert retry.retry_token == nil
+    assert retry.resume_checkpoint_path == Path.join(workspace, ".symphony/resume.json")
+
+    checkpoint = retry.resume_checkpoint_path |> File.read!() |> Jason.decode!()
+    assert checkpoint["schema"] == "symphony.resume.v1"
+    assert checkpoint["issue"]["identifier"] == "MT-FREEZE"
+    assert checkpoint["session"]["session_id"] == "thread-freeze"
+    assert [%{"message" => "recent checkpoint evidence"}] = checkpoint["codex"]["stream_window"]
+
+    {resumed_state, resume_payload} = Orchestrator.resume_for_test(frozen_state)
+
+    assert resume_payload.status == "resuming"
+    assert resumed_state.freeze == nil
+    assert resumed_state.retry_attempts == %{}
+    refute MapSet.member?(resumed_state.claimed, issue.id)
+    assert is_reference(resumed_state.tick_timer_ref)
+    Process.cancel_timer(resumed_state.tick_timer_ref)
+  end
+
+  test "prompt builder appends resume checkpoint context" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Work {{ issue.identifier }}")
+
+    issue = %Issue{id: "issue-resume", identifier: "MT-RESUME", state: "In Progress"}
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        resume_checkpoint: %{
+          "path" => "/tmp/workspace/.symphony/resume.json",
+          "frozen_at" => "2026-05-29T00:00:00Z",
+          "issue" => %{"identifier" => "MT-RESUME", "state" => "In Progress"},
+          "session" => %{"session_id" => "thread-resume", "turn_count" => 3},
+          "codex" => %{
+            "last_message" => "agent was validating",
+            "stream_window" => [%{"message" => "last visible status"}]
+          }
+        }
+      )
+
+    assert prompt =~ "Work MT-RESUME"
+    assert prompt =~ "Symphony resume checkpoint"
+    assert prompt =~ "Resume from the preserved workspace"
+    assert prompt =~ "last visible status"
   end
 
   test "current WORKFLOW.md file is valid and complete" do
