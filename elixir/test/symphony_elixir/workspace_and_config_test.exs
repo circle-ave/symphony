@@ -484,10 +484,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Enum.map(issues, & &1.id) == issue_ids
 
-    assert_receive {:fetch_issue_states_page, query, %{ids: ^first_batch_ids, first: 50, relationFirst: 50}}
-    assert query =~ "SymphonyLinearIssuesById"
+    first_page_variables = %{projectSlug: "project", ids: first_batch_ids, first: 50, relationFirst: 50}
+    assert_receive {:fetch_issue_states_page, query, ^first_page_variables}
 
-    assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
+    assert query =~ "SymphonyLinearIssuesById"
+    assert query =~ "project: {slugId: {eq: $projectSlug}}"
+
+    second_page_variables = %{projectSlug: "project", ids: second_batch_ids, first: 5, relationFirst: 50}
+    assert_receive {:fetch_issue_states_page, ^query, ^second_page_variables}
   end
 
   test "linear client treats newer comment reply marker as handled" do
@@ -1433,11 +1437,44 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
            }
   end
 
-  test "runtime sandbox policy resolution passes explicit policies through unchanged" do
+  test "runtime sandbox policy resolution injects writable roots for workspaceWrite when omitted" do
     test_root =
       Path.join(
         System.tmp_dir!(),
         "symphony-elixir-runtime-sandbox-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      issue_workspace = Path.join(workspace_root, "MT-100")
+      File.mkdir_p!(issue_workspace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_turn_sandbox_policy: %{
+          type: "workspaceWrite",
+          networkAccess: true
+        }
+      )
+
+      assert {:ok, runtime_settings} = Config.codex_runtime_settings(issue_workspace)
+      assert {:ok, canonical_issue_workspace} = SymphonyElixir.PathSafety.canonicalize(issue_workspace)
+
+      assert runtime_settings.turn_sandbox_policy == %{
+               "type" => "workspaceWrite",
+               "writableRoots" => [canonical_issue_workspace],
+               "networkAccess" => true
+             }
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "runtime sandbox policy resolution preserves explicit writable roots and non-workspace policies" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-runtime-sandbox-preserve-#{System.unique_integer([:positive])}"
       )
 
     try do
@@ -1490,7 +1527,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              SymphonyElixir.PathSafety.canonicalize(path)
   end
 
-  test "runtime sandbox policy resolution defaults when omitted and ignores workspace for explicit policies" do
+  test "runtime sandbox policy resolution defaults when omitted and ignores workspace for explicit non-workspace policies" do
     test_root =
       Path.join(
         System.tmp_dir!(),

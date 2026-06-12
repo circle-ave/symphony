@@ -26,15 +26,26 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
 
     def graphql(query, variables) do
-      send(self(), {:graphql_called, query, variables})
+      if String.contains?(query, "SymphonyIssueProjectScope") do
+        case Process.get({__MODULE__, :scope_result}) do
+          nil ->
+            scope_slug = Process.get({__MODULE__, :scope_slug}, "project")
+            {:ok, %{"data" => %{"issue" => %{"project" => %{"slugId" => scope_slug}}}}}
 
-      case Process.get({__MODULE__, :graphql_results}) do
-        [result | rest] ->
-          Process.put({__MODULE__, :graphql_results}, rest)
-          result
+          result ->
+            result
+        end
+      else
+        send(self(), {:graphql_called, query, variables})
 
-        _ ->
-          Process.get({__MODULE__, :graphql_result})
+        case Process.get({__MODULE__, :graphql_results}) do
+          [result | rest] ->
+            Process.put({__MODULE__, :graphql_results}, rest)
+            result
+
+          _ ->
+            Process.get({__MODULE__, :graphql_result})
+        end
       end
     end
   end
@@ -271,6 +282,12 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert {:error, :boom} = Adapter.create_comment("issue-1", "boom")
 
+    Process.put({FakeLinearClient, :scope_result}, {:error, :scope_down})
+
+    assert {:error, :scope_down} = Adapter.create_comment("issue-1", "scope down")
+
+    Process.delete({FakeLinearClient, :scope_result})
+
     Process.put({FakeLinearClient, :graphql_result}, {:ok, %{"data" => %{}}})
     assert {:error, :comment_create_failed} = Adapter.create_comment("issue-1", "weird")
 
@@ -283,7 +300,10 @@ defmodule SymphonyElixir.ExtensionsTest do
         {:ok,
          %{
            "data" => %{
-             "issue" => %{"team" => %{"states" => %{"nodes" => [%{"id" => "state-1"}]}}}
+             "issue" => %{
+               "project" => %{"slugId" => "project"},
+               "team" => %{"states" => %{"nodes" => [%{"id" => "state-1"}]}}
+             }
            }
          }},
         {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
@@ -304,7 +324,10 @@ defmodule SymphonyElixir.ExtensionsTest do
         {:ok,
          %{
            "data" => %{
-             "issue" => %{"team" => %{"states" => %{"nodes" => [%{"id" => "state-1"}]}}}
+             "issue" => %{
+               "project" => %{"slugId" => "project"},
+               "team" => %{"states" => %{"nodes" => [%{"id" => "state-1"}]}}
+             }
            }
          }},
         {:ok, %{"data" => %{"issueUpdate" => %{"success" => false}}}}
@@ -319,6 +342,23 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:error, :boom} = Adapter.update_issue_state("issue-1", "Boom")
 
     Process.put({FakeLinearClient, :graphql_results}, [{:ok, %{"data" => %{}}}])
+    assert {:error, :issue_project_not_found} = Adapter.update_issue_state("issue-1", "Missing")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{
+               "project" => %{"slugId" => "project"},
+               "team" => %{"states" => %{"nodes" => []}}
+             }
+           }
+         }}
+      ]
+    )
+
     assert {:error, :state_not_found} = Adapter.update_issue_state("issue-1", "Missing")
 
     Process.put(
@@ -327,7 +367,10 @@ defmodule SymphonyElixir.ExtensionsTest do
         {:ok,
          %{
            "data" => %{
-             "issue" => %{"team" => %{"states" => %{"nodes" => [%{"id" => "state-1"}]}}}
+             "issue" => %{
+               "project" => %{"slugId" => "project"},
+               "team" => %{"states" => %{"nodes" => [%{"id" => "state-1"}]}}
+             }
            }
          }},
         {:ok, %{"data" => %{}}}
@@ -342,7 +385,10 @@ defmodule SymphonyElixir.ExtensionsTest do
         {:ok,
          %{
            "data" => %{
-             "issue" => %{"team" => %{"states" => %{"nodes" => [%{"id" => "state-1"}]}}}
+             "issue" => %{
+               "project" => %{"slugId" => "project"},
+               "team" => %{"states" => %{"nodes" => [%{"id" => "state-1"}]}}
+             }
            }
          }},
         :unexpected
@@ -350,6 +396,31 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+
+    Process.put({FakeLinearClient, :scope_slug}, "ccms")
+
+    assert {:error, {:issue_outside_selected_project, "ccms", "project"}} =
+             Adapter.create_comment("issue-ccms", "wrong project")
+
+    Process.delete({FakeLinearClient, :scope_slug})
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{
+               "project" => %{"slugId" => "ccms"},
+               "team" => %{"states" => %{"nodes" => [%{"id" => "state-1"}]}}
+             }
+           }
+         }}
+      ]
+    )
+
+    assert {:error, {:issue_outside_selected_project, "ccms", "project"}} =
+             Adapter.update_issue_state("issue-ccms", "Done")
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do

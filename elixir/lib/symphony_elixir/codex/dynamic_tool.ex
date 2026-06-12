@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.{Config, Linear.Client}
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
@@ -45,6 +45,43 @@ defmodule SymphonyElixir.Codex.DynamicTool do
             name
           }
         }
+      }
+    }
+  }
+  """
+  @linear_scope_issue_query """
+  query SymphonyLinearScopeIssue($issueId: String!) {
+    issue(id: $issueId) {
+      id
+      identifier
+      project {
+        id
+        slugId
+      }
+    }
+  }
+  """
+  @linear_scope_comment_query """
+  query SymphonyLinearScopeComment($commentId: String!) {
+    comment(id: $commentId) {
+      id
+      issue {
+        id
+        identifier
+        project {
+          id
+          slugId
+        }
+      }
+    }
+  }
+  """
+  @linear_scope_project_query """
+  query SymphonyLinearScopeProject($projectSlug: String!) {
+    projects(filter: {slugId: {eq: $projectSlug}}, first: 1) {
+      nodes {
+        id
+        slugId
       }
     }
   }
@@ -116,12 +153,200 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp normalize_linear_graphql_arguments(_arguments), do: {:error, :invalid_arguments}
 
   defp authorize_linear_graphql(query, variables, opts, linear_client) do
-    if review_guard_required?(opts) and issue_state_update_query?(query) do
-      authorize_issue_state_update(query, variables, opts, linear_client)
+    with :ok <- authorize_linear_mutation_scope(query, variables, linear_client) do
+      if review_guard_required?(opts) and issue_state_update_query?(query) do
+        authorize_issue_state_update(query, variables, opts, linear_client)
+      else
+        :ok
+      end
+    end
+  end
+
+  defp authorize_linear_mutation_scope(query, variables, linear_client) do
+    if graphql_mutation?(query) do
+      query
+      |> linear_mutation_targets(variables)
+      |> authorize_linear_mutation_targets(linear_client)
     else
       :ok
     end
   end
+
+  defp graphql_mutation?(query) when is_binary(query) do
+    String.match?(query, ~r/\A\s*mutation\b/)
+  end
+
+  defp linear_mutation_targets(query, variables) do
+    [
+      issue_mutation_target(query, variables, "issueUpdate", [["issueId"], ["issue_id"], ["id"], ["input", "id"]]),
+      issue_mutation_target(query, variables, "commentCreate", [["issueId"], ["issue_id"], ["input", "issueId"], ["input", "issue_id"]]),
+      issue_mutation_target(query, variables, "issueAttachmentCreate", [
+        ["issueId"],
+        ["issue_id"],
+        ["input", "issueId"],
+        ["input", "issue_id"]
+      ]),
+      issue_mutation_target(query, variables, "issueRelationCreate", [
+        ["issueId"],
+        ["issue_id"],
+        ["relatedIssueId"],
+        ["related_issue_id"],
+        ["input", "issueId"],
+        ["input", "issue_id"],
+        ["input", "relatedIssueId"],
+        ["input", "related_issue_id"]
+      ]),
+      comment_mutation_target(query, variables, "commentUpdate"),
+      comment_mutation_target(query, variables, "commentDelete"),
+      project_mutation_target(query, variables, "issueCreate")
+    ]
+    |> List.flatten()
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp issue_mutation_target(query, variables, mutation_name, paths) do
+    if String.contains?(query, mutation_name) do
+      issue_ids =
+        issue_target_variable_values(variables, paths)
+        |> Kernel.++(inline_values(query, ~r/issueId\s*:\s*"([^"]+)"/))
+        |> Kernel.++(
+          if mutation_name == "issueUpdate",
+            do: inline_values(query, ~r/issueUpdate\s*\(\s*id\s*:\s*"([^"]+)"/),
+            else: []
+        )
+        |> Enum.uniq()
+
+      if issue_ids == [] do
+        [{:unverified, mutation_name}]
+      else
+        Enum.map(issue_ids, &{:issue, &1})
+      end
+    end
+  end
+
+  defp issue_target_variable_values(variables, paths) do
+    Enum.flat_map(paths, fn path ->
+      variables
+      |> variable_value([path])
+      |> string_list()
+    end)
+  end
+
+  defp string_list(nil), do: []
+  defp string_list(value), do: [to_string(value)]
+
+  defp comment_mutation_target(query, variables, mutation_name) do
+    if String.contains?(query, mutation_name) do
+      comment_ids =
+        variables
+        |> variable_value([[mutation_name_id_key(mutation_name)], ["commentId"], ["comment_id"], ["id"], ["input", "id"]])
+        |> case do
+          nil -> inline_values(query, ~r/#{mutation_name}\s*\(\s*id\s*:\s*"([^"]+)"/)
+          value -> [to_string(value)]
+        end
+        |> Enum.uniq()
+
+      if comment_ids == [] do
+        [{:unverified, mutation_name}]
+      else
+        Enum.map(comment_ids, &{:comment, &1})
+      end
+    end
+  end
+
+  defp mutation_name_id_key("commentUpdate"), do: "commentUpdateId"
+  defp mutation_name_id_key("commentDelete"), do: "commentDeleteId"
+
+  defp project_mutation_target(query, variables, mutation_name) do
+    if String.contains?(query, mutation_name) do
+      project_ids =
+        variables
+        |> variable_value([["projectId"], ["project_id"], ["input", "projectId"], ["input", "project_id"]])
+        |> case do
+          nil -> inline_values(query, ~r/projectId\s*:\s*"([^"]+)"/)
+          value -> [to_string(value)]
+        end
+        |> Enum.uniq()
+
+      if project_ids == [] do
+        [{:unverified, mutation_name}]
+      else
+        Enum.map(project_ids, &{:project, &1})
+      end
+    end
+  end
+
+  defp authorize_linear_mutation_targets([], _linear_client), do: :ok
+
+  defp authorize_linear_mutation_targets(targets, linear_client) when is_list(targets) do
+    Enum.reduce_while(targets, :ok, fn target, :ok ->
+      case authorize_linear_mutation_target(target, linear_client) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp authorize_linear_mutation_target({:issue, issue_id}, linear_client) do
+    with {:ok, response} <- linear_client.(@linear_scope_issue_query, %{"issueId" => issue_id}, []) do
+      verify_scoped_issue_payload(payload_value(response, ["data", "issue"]), "issue", issue_id)
+    end
+  end
+
+  defp authorize_linear_mutation_target({:comment, comment_id}, linear_client) do
+    with {:ok, response} <- linear_client.(@linear_scope_comment_query, %{"commentId" => comment_id}, []) do
+      verify_scoped_issue_payload(payload_value(response, ["data", "comment", "issue"]), "comment", comment_id)
+    end
+  end
+
+  defp authorize_linear_mutation_target({:project, project_id}, linear_client) do
+    selected_project_slug = Config.settings!().tracker.project_slug
+
+    with {:ok, response} <- linear_client.(@linear_scope_project_query, %{"projectSlug" => selected_project_slug}, []) do
+      project = payload_value(response, ["data", "projects", "nodes"]) |> List.wrap() |> List.first()
+
+      if payload_value(project, ["id"]) == project_id do
+        :ok
+      else
+        linear_scope_error("Blocked Linear mutation: target project is outside the active Symphony project.", %{
+          "projectId" => project_id,
+          "selectedProjectSlug" => selected_project_slug
+        })
+      end
+    end
+  end
+
+  defp authorize_linear_mutation_target({:unverified, mutation_name}, _linear_client) do
+    linear_scope_error("Blocked Linear mutation: Symphony could not verify the target scope.", %{
+      "mutation" => mutation_name
+    })
+  end
+
+  defp verify_scoped_issue_payload(issue, target_type, target_id) when is_map(issue) do
+    selected_project_slug = Config.settings!().tracker.project_slug
+    issue_project_slug = payload_value(issue, ["project", "slugId"])
+
+    if is_binary(selected_project_slug) and issue_project_slug == selected_project_slug do
+      :ok
+    else
+      linear_scope_error("Blocked Linear mutation: target #{target_type} is outside the active Symphony project.", %{
+        "targetType" => target_type,
+        "targetId" => target_id,
+        "issueIdentifier" => payload_value(issue, ["identifier"]),
+        "issueProjectSlug" => issue_project_slug,
+        "selectedProjectSlug" => selected_project_slug
+      })
+    end
+  end
+
+  defp verify_scoped_issue_payload(_issue, target_type, target_id) do
+    linear_scope_error("Blocked Linear mutation: Symphony could not verify the target #{target_type}.", %{
+      "targetType" => target_type,
+      "targetId" => target_id
+    })
+  end
+
+  defp linear_scope_error(message, details), do: {:error, {:linear_scope_blocked, message, details}}
 
   defp authorize_issue_state_update(query, variables, opts, linear_client) do
     with {:ok, issue_id, state_id} <- issue_state_update_ids(query, variables),
@@ -210,6 +435,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       [_, value] -> value
       _ -> nil
     end
+  end
+
+  defp inline_values(query, regex) do
+    Regex.scan(regex, query, capture: :all_but_first)
+    |> List.flatten()
   end
 
   defp fetch_target_state(linear_client, issue_id, state_id) do
@@ -768,6 +998,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "error" => %{
         "message" => "Linear GraphQL request failed before receiving a successful response.",
         "reason" => inspect(reason)
+      }
+    }
+  end
+
+  defp tool_error_payload({:linear_scope_blocked, message, details}) do
+    %{
+      "error" => %{
+        "message" => message,
+        "details" => details
       }
     }
   end

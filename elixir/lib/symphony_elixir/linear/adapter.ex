@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   @behaviour SymphonyElixir.Tracker
 
-  alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.{Config, Linear.Client}
 
   @create_comment_mutation """
   mutation SymphonyCreateComment($issueId: String!, $body: String!) {
@@ -26,12 +26,25 @@ defmodule SymphonyElixir.Linear.Adapter do
   @state_lookup_query """
   query SymphonyResolveStateId($issueId: String!, $stateName: String!) {
     issue(id: $issueId) {
+      project {
+        slugId
+      }
       team {
         states(filter: {name: {eq: $stateName}}, first: 1) {
           nodes {
             id
           }
         }
+      }
+    }
+  }
+  """
+
+  @issue_scope_query """
+  query SymphonyIssueProjectScope($issueId: String!) {
+    issue(id: $issueId) {
+      project {
+        slugId
       }
     }
   }
@@ -48,7 +61,8 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do
-    with {:ok, response} <- client_module().graphql(@create_comment_mutation, %{issueId: issue_id, body: body}),
+    with :ok <- ensure_issue_in_selected_project(issue_id),
+         {:ok, response} <- client_module().graphql(@create_comment_mutation, %{issueId: issue_id, body: body}),
          true <- get_in(response, ["data", "commentCreate", "success"]) == true do
       :ok
     else
@@ -77,9 +91,17 @@ defmodule SymphonyElixir.Linear.Adapter do
     Application.get_env(:symphony_elixir, :linear_client_module, Client)
   end
 
+  defp ensure_issue_in_selected_project(issue_id) do
+    case client_module().graphql(@issue_scope_query, %{issueId: issue_id}) do
+      {:ok, response} -> verify_issue_project(response)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp resolve_state_id(issue_id, state_name) do
     with {:ok, response} <-
            client_module().graphql(@state_lookup_query, %{issueId: issue_id, stateName: state_name}),
+         :ok <- verify_issue_project(response),
          state_id when is_binary(state_id) <-
            get_in(response, ["data", "issue", "team", "states", "nodes", Access.at(0), "id"]) do
       {:ok, state_id}
@@ -88,4 +110,16 @@ defmodule SymphonyElixir.Linear.Adapter do
       _ -> {:error, :state_not_found}
     end
   end
+
+  defp verify_issue_project(%{"data" => %{"issue" => %{"project" => %{"slugId" => slug_id}}}}) do
+    selected_project_slug = Config.settings!().tracker.project_slug
+
+    if is_binary(selected_project_slug) and slug_id == selected_project_slug do
+      :ok
+    else
+      {:error, {:issue_outside_selected_project, slug_id, selected_project_slug}}
+    end
+  end
+
+  defp verify_issue_project(_response), do: {:error, :issue_project_not_found}
 end

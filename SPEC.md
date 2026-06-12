@@ -397,7 +397,8 @@ Fields:
   - MUST match one `allowed[].id`.
 - `allowed` (list of repository objects)
   - Default: `[]`.
-  - When non-empty, dispatch and workspace creation are limited to the selected repository.
+  - When non-empty, dispatch, workspace creation, issue-state refresh, tracker writes, and injected
+    tracker mutation tools are limited to the selected repository's tracker scope.
 
 Repository fields:
 
@@ -480,6 +481,8 @@ fields locally if they want stricter startup checks.
   - Default: implementation-defined.
 - `turn_sandbox_policy` (Codex `SandboxPolicy` value)
   - Default: implementation-defined.
+  - For `workspaceWrite`, implementations SHOULD supply the per-issue workspace as
+    `writableRoots` when the configured policy omits writable roots.
 - `model_router` (object)
   - Optional.
   - When enabled, implementations MAY run a short classification turn before the root agent session.
@@ -1145,6 +1148,9 @@ Optional client-side tool extension:
 - `operationName` selection is intentionally out of scope for this extension.
 - Reuse the configured Linear endpoint and auth from the active Symphony workflow/runtime config; do
   not require the coding agent to read raw tokens from disk.
+- Mutations that target Linear issues, comments, or projects MUST be verified against the effective
+  selected-project scope before execution. Out-of-project mutations MUST return `success=false`
+  without forwarding the mutation.
 - Tool result semantics:
   - transport success + no top-level GraphQL `errors` -> `success=true`
   - top-level GraphQL `errors` present -> `success=false`, but preserve the GraphQL response body
@@ -1221,6 +1227,8 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 - Auth token sent in `Authorization` header
 - Effective `tracker.project_slug` maps to Linear project `slugId`
 - Candidate issue query filters project using `project: { slugId: { eq: $projectSlug } }`
+- Issue-state refresh query MUST also filter by the effective project slug. An issue found by ID
+  outside the active project is treated as not visible to the current workflow.
 - Candidate and issue-state refresh queries include issue labels. Required
   label filtering happens after normalization so refresh can observe label
   removal and stop or release existing work.

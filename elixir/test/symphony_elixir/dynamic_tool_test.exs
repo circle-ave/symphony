@@ -166,6 +166,55 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["success"] == false
   end
 
+  test "linear_graphql blocks issue mutations outside the selected project" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => """
+          mutation UpdateIssueState($id: String!, $stateId: String!) {
+            issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+          }
+          """,
+          "variables" => %{"id" => "issue-ccms", "stateId" => "state-review"}
+        },
+        linear_client: fn query, variables, _opts ->
+          cond do
+            String.contains?(query, "SymphonyLinearScopeIssue") ->
+              send(test_pid, {:linear_client_called, :scope_lookup, variables})
+
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "id" => variables["issueId"],
+                     "identifier" => "CIR-1",
+                     "project" => %{"slugId" => "ccms"}
+                   }
+                 }
+               }}
+
+            String.contains?(query, "issueUpdate") ->
+              send(test_pid, {:linear_client_called, :state_update, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+          end
+        end
+      )
+
+    assert response["success"] == false
+    payload = Jason.decode!(response["output"])
+
+    assert payload["error"]["message"] ==
+             "Blocked Linear mutation: target issue is outside the active Symphony project."
+
+    assert payload["error"]["details"]["issueProjectSlug"] == "ccms"
+    assert payload["error"]["details"]["selectedProjectSlug"] == "project"
+    assert_received {:linear_client_called, :scope_lookup, %{"issueId" => "issue-ccms"}}
+    refute_received {:linear_client_called, :state_update, _variables}
+  end
+
   test "linear_graphql blocks guarded review state updates without readiness proof" do
     test_pid = self()
 
@@ -797,6 +846,20 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   defp review_state_guard_client(test_pid, state_name) do
     fn query, variables, opts ->
       cond do
+        String.contains?(query, "SymphonyLinearScopeIssue") ->
+          send(test_pid, {:linear_client_called, :scope_lookup, variables})
+
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "id" => variables["issueId"],
+                 "identifier" => "MT-1",
+                 "project" => %{"slugId" => "project"}
+               }
+             }
+           }}
+
         String.contains?(query, "SymphonyReviewStateGuard") ->
           send(test_pid, {:linear_client_called, :guard_lookup, variables})
 

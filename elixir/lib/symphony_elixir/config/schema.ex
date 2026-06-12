@@ -411,7 +411,11 @@ defmodule SymphonyElixir.Config.Schema do
   def resolve_turn_sandbox_policy(settings, workspace \\ nil) do
     case settings.codex.turn_sandbox_policy do
       %{} = policy ->
-        policy
+        workspace
+        |> default_workspace_root(settings.workspace.root)
+        |> expand_local_workspace_root()
+        |> default_turn_sandbox_policy()
+        |> maybe_apply_default_writable_roots(policy)
 
       _ ->
         workspace
@@ -426,12 +430,24 @@ defmodule SymphonyElixir.Config.Schema do
   def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil, opts \\ []) do
     case settings.codex.turn_sandbox_policy do
       %{} = policy ->
-        {:ok, policy}
+        resolve_explicit_runtime_turn_sandbox_policy(settings, workspace, opts, policy)
 
       _ ->
         workspace
         |> default_workspace_root(settings.workspace.root)
         |> default_runtime_turn_sandbox_policy(opts)
+    end
+  end
+
+  defp resolve_explicit_runtime_turn_sandbox_policy(settings, workspace, opts, policy) do
+    workspace_root = default_workspace_root(workspace, settings.workspace.root)
+
+    if workspace_write_policy_needs_roots?(policy) do
+      with {:ok, default_policy} <- default_runtime_turn_sandbox_policy(workspace_root, opts) do
+        {:ok, maybe_apply_default_writable_roots(default_policy, policy)}
+      end
+    else
+      {:ok, policy}
     end
   end
 
@@ -764,6 +780,23 @@ defmodule SymphonyElixir.Config.Schema do
       "excludeSlashTmp" => false
     }
   end
+
+  defp maybe_apply_default_writable_roots(default_policy, %{} = policy) do
+    if workspace_write_policy_needs_roots?(policy) do
+      Map.put(policy, "writableRoots", Map.fetch!(default_policy, "writableRoots"))
+    else
+      policy
+    end
+  end
+
+  defp workspace_write_policy_needs_roots?(%{} = policy) do
+    policy_type(policy) == "workspaceWrite" and not usable_writable_roots?(Map.get(policy, "writableRoots"))
+  end
+
+  defp policy_type(%{} = policy), do: Map.get(policy, "type") || Map.get(policy, :type)
+
+  defp usable_writable_roots?(roots) when is_list(roots), do: Enum.any?(roots, &is_binary/1)
+  defp usable_writable_roots?(_roots), do: false
 
   defp default_runtime_turn_sandbox_policy(workspace_root, opts) when is_binary(workspace_root) do
     if Keyword.get(opts, :remote, false) do
