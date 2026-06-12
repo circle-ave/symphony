@@ -39,6 +39,20 @@ agent:
   max_turns: 20
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+  model_router:
+    enabled: true
+    router_command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+    default_profile: standard
+    profiles:
+      fast:
+        command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5-mini"' --config model_reasoning_effort=medium app-server
+        description: Small docs, config, or mechanical edits with low ambiguity.
+      standard:
+        command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
+        description: Normal implementation work with moderate ambiguity.
+      deep:
+        command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+        description: Architecture, migrations, failed retries, rework, or risky user-facing changes.
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:

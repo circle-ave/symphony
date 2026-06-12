@@ -4,7 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.Codex.AppServer
+  alias SymphonyElixir.Codex.{AppServer, ModelRouter}
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
   @resource_gate_markers %{
@@ -131,14 +131,31 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
+    router_opts = Keyword.put(opts, :worker_host, worker_host)
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
+    with {:ok, model_route} <- ModelRouter.route(issue, workspace, router_opts),
+         :ok <- send_model_route_update(codex_update_recipient, issue, model_route),
+         session_opts <- Keyword.merge(router_opts, command: model_route.command),
+         {:ok, session} <- AppServer.start_session(workspace, session_opts) do
       try do
         do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
       after
         AppServer.stop_session(session)
       end
     end
+  end
+
+  defp send_model_route_update(recipient, %Issue{} = issue, route) when is_map(route) do
+    send_codex_update(recipient, issue, %{
+      event: :model_routed,
+      timestamp: DateTime.utc_now(),
+      payload: %{
+        profile: route.profile,
+        reason: route.reason,
+        confidence: route.confidence,
+        source: route.source
+      }
+    })
   end
 
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
@@ -238,8 +255,6 @@ defmodule SymphonyElixir.AgentRunner do
       gate -> {:blocked, gate}
     end
   end
-
-  defp continue_with_issue?(_workspace, issue, _issue_state_fetcher), do: {:done, issue}
 
   defp continue_with_issue_state(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do

@@ -480,6 +480,14 @@ fields locally if they want stricter startup checks.
   - Default: implementation-defined.
 - `turn_sandbox_policy` (Codex `SandboxPolicy` value)
   - Default: implementation-defined.
+- `model_router` (object)
+  - Optional.
+  - When enabled, implementations MAY run a short classification turn before the root agent session.
+  - `router_command` is the Codex app-server command used for classification.
+  - `profiles` maps profile IDs to launch commands and descriptions.
+  - `default_profile` is used when routing is disabled, fails, or returns an unknown profile.
+  - Router turns SHOULD be read-only; when routing is enabled, implementations SHOULD avoid
+    exposing operator-facing model profile controls.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)
@@ -631,6 +639,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
 - `codex.thread_sandbox`: Codex `SandboxMode` value, default implementation-defined
 - `codex.turn_sandbox_policy`: Codex `SandboxPolicy` value, default implementation-defined
+- `codex.model_router`: object, default `{}`
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
@@ -972,14 +981,18 @@ Protocol source of truth:
 
 Subprocess launch parameters:
 
-- Command: `codex.command`
-- Invocation: `bash -lc <codex.command>`
+- Command: `codex.command`, or a selected `codex.model_router.profiles[].command` when model
+  routing is enabled for the root session
+- Invocation: `bash -lc <selected command>`
 - Working directory: workspace path
 - Transport/framing: the protocol transport required by the targeted Codex app-server version
 
 Notes:
 
 - The default command is `codex app-server`.
+- Model routing, when enabled, is server-side dispatch policy. The router SHOULD run with the
+  highest-intelligence configured command and return a profile ID; Symphony then launches the root
+  session with that profile's command.
 - Approval policy, sandbox policy, cwd, prompt input, and OPTIONAL tool declarations are supplied
   using fields supported by the targeted Codex app-server version.
 
@@ -1493,6 +1506,8 @@ Minimum endpoints:
 - `GET /api/v1/controls`
   - Returns operator-facing controls, including the current Codex launch command for visibility and
     repository selection options for future agent sessions.
+  - Implementations SHOULD NOT expose model profile selection here when server-side model routing is
+    enabled.
 
 - `POST /api/v1/controls`
   - Updates supported operator-editable agent controls.

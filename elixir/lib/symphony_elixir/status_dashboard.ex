@@ -1182,6 +1182,17 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
+  defp humanize_codex_event(:model_routed, _message, payload) do
+    profile = map_value(payload, ["profile", :profile]) || "default"
+    reason = map_value(payload, ["reason", :reason])
+
+    if is_binary(reason) and String.trim(reason) != "" do
+      "model routed to #{profile}: #{inline_text(reason)}"
+    else
+      "model routed to #{profile}"
+    end
+  end
+
   defp humanize_codex_event(:turn_input_required, _message, _payload), do: "turn blocked: waiting for user input"
 
   defp humanize_codex_event(:approval_auto_approved, message, payload) do

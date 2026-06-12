@@ -20,6 +20,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           auto_approve_requests: boolean(),
           thread_sandbox: String.t(),
           turn_sandbox_policy: map(),
+          command: String.t(),
           thread_id: String.t(),
           workspace: Path.t(),
           worker_host: String.t() | nil
@@ -39,12 +40,13 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
+    command = Keyword.get(opts, :command, Config.settings!().codex.command)
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
-         {:ok, port} <- start_port(expanded_workspace, worker_host) do
+         {:ok, port} <- start_port(expanded_workspace, worker_host, command) do
       metadata = port_metadata(port, worker_host)
 
-      with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
+      with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host, opts),
            {:ok, thread_id} <- do_start_session(port, expanded_workspace, session_policies) do
         {:ok,
          %{
@@ -54,6 +56,7 @@ defmodule SymphonyElixir.Codex.AppServer do
            auto_approve_requests: session_policies.approval_policy == "never",
            thread_sandbox: session_policies.thread_sandbox,
            turn_sandbox_policy: session_policies.turn_sandbox_policy,
+           command: command,
            thread_id: thread_id,
            workspace: expanded_workspace,
            worker_host: worker_host
@@ -186,7 +189,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, nil) do
+  defp start_port(workspace, nil, command) when is_binary(command) do
     executable = System.find_executable("bash")
 
     if is_nil(executable) do
@@ -199,7 +202,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
+            args: [~c"-lc", String.to_charlist(command)],
             cd: String.to_charlist(workspace),
             line: @port_line_bytes
           ]
@@ -209,15 +212,15 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, worker_host) when is_binary(worker_host) do
-    remote_command = remote_launch_command(workspace)
+  defp start_port(workspace, worker_host, command) when is_binary(worker_host) and is_binary(command) do
+    remote_command = remote_launch_command(workspace, command)
     SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
   end
 
-  defp remote_launch_command(workspace) when is_binary(workspace) do
+  defp remote_launch_command(workspace, command) when is_binary(workspace) and is_binary(command) do
     [
       "cd #{shell_escape(workspace)}",
-      "exec #{Config.settings!().codex.command}"
+      "exec #{command}"
     ]
     |> Enum.join(" && ")
   end
@@ -262,13 +265,32 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp session_policies(workspace, nil) do
-    Config.codex_runtime_settings(workspace)
+  defp session_policies(workspace, nil, opts) do
+    workspace
+    |> Config.codex_runtime_settings()
+    |> maybe_override_session_policies(opts)
   end
 
-  defp session_policies(workspace, worker_host) when is_binary(worker_host) do
-    Config.codex_runtime_settings(workspace, remote: true)
+  defp session_policies(workspace, worker_host, opts) when is_binary(worker_host) do
+    workspace
+    |> Config.codex_runtime_settings(remote: true)
+    |> maybe_override_session_policies(opts)
   end
+
+  defp maybe_override_session_policies({:ok, policies}, opts) do
+    policies =
+      policies
+      |> maybe_put_policy(:approval_policy, Keyword.get(opts, :approval_policy))
+      |> maybe_put_policy(:thread_sandbox, Keyword.get(opts, :thread_sandbox))
+      |> maybe_put_policy(:turn_sandbox_policy, Keyword.get(opts, :turn_sandbox_policy))
+
+    {:ok, policies}
+  end
+
+  defp maybe_override_session_policies({:error, _reason} = error, _opts), do: error
+
+  defp maybe_put_policy(policies, _key, nil), do: policies
+  defp maybe_put_policy(policies, key, value), do: Map.put(policies, key, value)
 
   defp do_start_session(port, workspace, session_policies) do
     case send_initialize(port) do
