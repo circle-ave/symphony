@@ -6,9 +6,22 @@ defmodule SymphonyElixir.PromptBuilder do
   alias SymphonyElixir.{Config, Workflow}
 
   @render_opts [strict_variables: true, strict_filters: true]
+  @phase_by_state %{
+    "backlog" => "idle",
+    "done" => "terminal",
+    "closed" => "terminal",
+    "cancelled" => "terminal",
+    "canceled" => "terminal",
+    "duplicate" => "terminal",
+    "human review" => "review",
+    "merging" => "landing",
+    "rework" => "rework"
+  }
 
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
+    phase = Keyword.get(opts, :phase) || phase_for_issue(issue)
+
     template =
       Workflow.current()
       |> prompt_template!()
@@ -19,6 +32,7 @@ defmodule SymphonyElixir.PromptBuilder do
       %{
         "attempt" => Keyword.get(opts, :attempt),
         "issue" => issue |> Map.from_struct() |> to_solid_map(),
+        "phase" => phase,
         "repository" => Config.selected_repository() |> repository_context()
       },
       @render_opts
@@ -26,6 +40,17 @@ defmodule SymphonyElixir.PromptBuilder do
     |> IO.iodata_to_binary()
     |> maybe_append_resume_checkpoint(Keyword.get(opts, :resume_checkpoint))
   end
+
+  @spec phase_for_issue(map()) :: String.t()
+  def phase_for_issue(%{state: state}), do: phase_for_state(state)
+  def phase_for_issue(%{"state" => state}), do: phase_for_state(state)
+  def phase_for_issue(_issue), do: "execution"
+
+  defp phase_for_state(state) when is_binary(state) do
+    Map.get(@phase_by_state, state |> String.trim() |> String.downcase(), "execution")
+  end
+
+  defp phase_for_state(_state), do: "execution"
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
 

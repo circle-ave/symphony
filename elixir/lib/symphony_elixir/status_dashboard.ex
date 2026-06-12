@@ -1193,6 +1193,31 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
+  defp humanize_codex_event(:prompt_prepared, _message, payload) do
+    phase = map_value(payload, ["phase", :phase]) || "unknown"
+    turn_number = map_value(payload, ["turn_number", :turn_number]) || "?"
+    max_turns = map_value(payload, ["max_turns", :max_turns]) || "?"
+    prompt_words = map_value(payload, ["prompt_words", :prompt_words])
+    prompt_bytes = map_value(payload, ["prompt_bytes", :prompt_bytes])
+
+    size =
+      cond do
+        is_integer(prompt_words) and is_integer(prompt_bytes) ->
+          "#{format_count(prompt_words)} words, #{format_count(prompt_bytes)} bytes"
+
+        is_integer(prompt_words) ->
+          "#{format_count(prompt_words)} words"
+
+        is_integer(prompt_bytes) ->
+          "#{format_count(prompt_bytes)} bytes"
+
+        true ->
+          "unknown size"
+      end
+
+    "prompt prepared (phase #{phase}, turn #{turn_number}/#{max_turns}, #{size})"
+  end
+
   defp humanize_codex_event(:turn_input_required, _message, _payload), do: "turn blocked: waiting for user input"
 
   defp humanize_codex_event(:approval_auto_approved, message, payload) do

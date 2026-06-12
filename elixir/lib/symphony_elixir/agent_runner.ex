@@ -159,7 +159,9 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+    phase = PromptBuilder.phase_for_issue(issue)
+    prompt = build_turn_prompt(issue, opts, turn_number, max_turns, phase)
+    send_prompt_prepared_update(codex_update_recipient, issue, prompt, phase, turn_number, max_turns)
 
     with {:ok, turn_session} <-
            AppServer.run_turn(
@@ -204,8 +206,8 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns) do
-    prompt = PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns, phase) do
+    prompt = PromptBuilder.build_prompt(issue, Keyword.put(opts, :phase, phase))
 
     if Keyword.get(opts, :comment_reply, false) do
       comment_reply_prompt(issue, Keyword.get(opts, :comment_reply_marker, @comment_reply_marker)) <>
@@ -215,16 +217,37 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
+  defp build_turn_prompt(_issue, _opts, turn_number, max_turns, phase) do
     """
     Continuation guidance:
 
     - The previous Codex turn completed normally, but the Linear issue is still in an active state.
     - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
+    - Current prompt phase: #{phase}.
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
     """
+  end
+
+  defp send_prompt_prepared_update(recipient, issue, prompt, phase, turn_number, max_turns) do
+    send_codex_update(recipient, issue, %{
+      event: :prompt_prepared,
+      timestamp: DateTime.utc_now(),
+      payload: %{
+        phase: phase,
+        turn_number: turn_number,
+        max_turns: max_turns,
+        prompt_bytes: byte_size(prompt),
+        prompt_words: prompt_word_count(prompt)
+      }
+    })
+  end
+
+  defp prompt_word_count(prompt) when is_binary(prompt) do
+    prompt
+    |> String.split(~r/\s+/, trim: true)
+    |> length()
   end
 
   defp comment_reply_prompt(%Issue{} = issue, marker) do

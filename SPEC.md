@@ -513,6 +513,11 @@ Template input variables:
 - `attempt` (integer or null)
   - `null`/absent on first attempt.
   - Integer on retry or continuation run.
+- `phase` (string)
+  - A compact routing hint derived from the issue state, such as `execution`, `review`, `landing`,
+    `rework`, `idle`, or `terminal`.
+  - Workflow templates MAY use this to gate state-specific prompt packets and avoid sending
+    unrelated instructions.
 
 Fallback prompt behavior:
 
@@ -1284,6 +1289,7 @@ Inputs to prompt rendering:
 
 - `workflow.prompt_template`
 - normalized `issue` object
+- phase string derived from issue state
 - OPTIONAL `attempt` integer (retry/continuation metadata)
 
 ### 12.2 Rendering Rules
@@ -1393,6 +1399,12 @@ Runtime accounting:
   snapshot/status view.
 - Add run duration seconds to the cumulative ended-session runtime when a session ends (normal exit
   or cancellation/termination).
+
+Prompt-size accounting:
+
+- Before each turn, implementations SHOULD emit a prompt-prepared event containing the prompt phase,
+  turn number, max turns, byte count, and approximate word count.
+- Prompt-size events are observability metadata; they MUST NOT be counted as model token usage.
 - Continuous background ticking of runtime totals is not REQUIRED.
 
 Rate-limit tracking:
@@ -1915,6 +1927,19 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
       app_server.stop_session(session)
       run_hook_best_effort("after_run", workspace.path)
       fail_worker("prompt error")
+
+    send(orchestrator_channel, {
+      codex_update,
+      issue.id,
+      {
+        event: "prompt_prepared",
+        phase: phase_for_issue(issue),
+        turn_number,
+        max_turns,
+        prompt_bytes: byte_size(prompt),
+        prompt_words: approximate_word_count(prompt)
+      }
+    })
 
     turn_result = app_server.run_turn(
       session=session,

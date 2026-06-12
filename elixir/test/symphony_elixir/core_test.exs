@@ -2384,9 +2384,9 @@ defmodule SymphonyElixir.CoreTest do
     assert {:ok, []} = Client.fetch_issues_by_states([])
   end
 
-  test "prompt builder renders issue and attempt values from workflow template" do
+  test "prompt builder renders issue, phase, and attempt values from workflow template" do
     workflow_prompt =
-      "Ticket {{ issue.identifier }} {{ issue.title }} labels={{ issue.labels }} attempt={{ attempt }}"
+      "Ticket {{ issue.identifier }} {{ issue.title }} labels={{ issue.labels }} phase={{ phase }} attempt={{ attempt }}"
 
     write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
 
@@ -2403,6 +2403,7 @@ defmodule SymphonyElixir.CoreTest do
 
     assert prompt =~ "Ticket S-1 Refactor backend request path"
     assert prompt =~ "labels=backend"
+    assert prompt =~ "phase=execution"
     assert prompt =~ "attempt=3"
   end
 
@@ -2451,6 +2452,17 @@ defmodule SymphonyElixir.CoreTest do
     }
 
     assert PromptBuilder.build_prompt(issue) == "Ticket MT-701"
+  end
+
+  test "prompt builder derives prompt phase from issue state" do
+    assert PromptBuilder.phase_for_issue(%{state: "Backlog"}) == "idle"
+    assert PromptBuilder.phase_for_issue(%{state: "Done"}) == "terminal"
+    assert PromptBuilder.phase_for_issue(%{"state" => "Human Review"}) == "review"
+    assert PromptBuilder.phase_for_issue(%{state: "Merging"}) == "landing"
+    assert PromptBuilder.phase_for_issue(%{state: "Rework"}) == "rework"
+    assert PromptBuilder.phase_for_issue(%{state: "In Progress"}) == "execution"
+    assert PromptBuilder.phase_for_issue(%{state: nil}) == "execution"
+    assert PromptBuilder.phase_for_issue(%{}) == "execution"
   end
 
   test "prompt builder uses strict variable rendering" do
@@ -2579,20 +2591,46 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue, attempt: 2)
 
-    assert prompt =~ "You are working on a Linear ticket `MT-616`"
-    assert prompt =~ "Repository: Symphony (`symphony`)"
-    assert prompt =~ "Issue context:"
+    assert prompt =~ "You are working on Linear ticket `MT-616`"
+    assert prompt =~ "for Symphony (`symphony`)"
+    assert prompt =~ "Prompt phase: `execution`"
     assert prompt =~ "Identifier: MT-616"
     assert prompt =~ "Title: Use rich templates for WORKFLOW.md"
     assert prompt =~ "Current status: In Progress"
     assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
-    assert prompt =~ "This is an unattended orchestration session."
-    assert prompt =~ "Only stop early for a true blocker"
-    assert prompt =~ "Do not include \"next steps for user\""
-    assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
-    assert prompt =~ "Do not call `gh pr merge` directly"
+    assert prompt =~ "This is unattended orchestration."
+    assert prompt =~ "Keep final replies to completed actions and blockers only."
+    assert prompt =~ "## Execution Packet"
+    assert prompt =~ "PR feedback sweep before `Human Review`"
+    refute prompt =~ "## Landing Packet"
+    refute prompt =~ "Do not call `gh pr merge` directly"
     assert prompt =~ "Continuation context:"
-    assert prompt =~ "retry attempt #2"
+    assert prompt =~ "Retry attempt #2"
+  end
+
+  test "in-repo WORKFLOW.md gates landing instructions to merging phase" do
+    workflow_path = Workflow.workflow_file_path()
+    Workflow.set_workflow_file_path(Path.expand("WORKFLOW.md", File.cwd!()))
+
+    issue = %Issue{
+      identifier: "MT-617",
+      title: "Land approved PR",
+      description: "Merge the approved work",
+      state: "Merging",
+      url: "https://example.org/issues/MT-617/land-approved-pr",
+      labels: ["merge"]
+    }
+
+    on_exit(fn -> Workflow.set_workflow_file_path(workflow_path) end)
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "Prompt phase: `landing`"
+    assert prompt =~ "## Landing Packet"
+    assert prompt =~ "Open `.codex/skills/land/SKILL.md`"
+    assert prompt =~ "Do not call `gh pr merge` directly"
+    refute prompt =~ "## Execution Packet"
+    refute prompt =~ "PR feedback sweep before `Human Review`"
   end
 
   test "prompt builder adds continuation guidance for retries" do
@@ -2770,6 +2808,23 @@ defmodule SymphonyElixir.CoreTest do
                  test_pid,
                  issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
                )
+
+      assert_receive {:codex_worker_update, "issue-live-updates",
+                      %{
+                        event: :prompt_prepared,
+                        timestamp: %DateTime{},
+                        payload: %{
+                          phase: "execution",
+                          turn_number: 1,
+                          max_turns: 20,
+                          prompt_bytes: prompt_bytes,
+                          prompt_words: prompt_words
+                        }
+                      }},
+                     500
+
+      assert prompt_bytes > 0
+      assert prompt_words > 0
 
       assert_receive {:codex_worker_update, "issue-live-updates",
                       %{
