@@ -193,7 +193,7 @@ Examples:
 
 - poll interval
 - workspace root
-- active and terminal issue states
+- active, waiting, and terminal issue states
 - concurrency limits
 - coding-agent executable/args/timeouts
 - workspace hooks
@@ -330,6 +330,7 @@ Top-level keys:
 - `tracker`
 - `polling`
 - `workspace`
+- `repositories`
 - `hooks`
 - `agent`
 - `codex`
@@ -357,7 +358,8 @@ Fields:
   - Canonical environment variable for `tracker.kind == "linear"`: `LINEAR_API_KEY`.
   - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
 - `project_slug` (string)
-  - REQUIRED for dispatch when `tracker.kind == "linear"`.
+  - REQUIRED for dispatch when `tracker.kind == "linear"` unless the selected repository supplies
+    `repositories.allowed[].tracker.project_slug`.
 - `required_labels` (list of strings)
   - Default: `[]`.
   - An issue MUST contain every configured label to dispatch or continue.
@@ -385,6 +387,33 @@ Fields:
   - `~` is expanded.
   - Relative paths are resolved relative to the directory containing `WORKFLOW.md`.
   - The effective workspace root is normalized to an absolute path before use.
+
+#### 5.3.3a `repositories` (object)
+
+Fields:
+
+- `selected` (string)
+  - REQUIRED when `allowed` is non-empty.
+  - MUST match one `allowed[].id`.
+- `allowed` (list of repository objects)
+  - Default: `[]`.
+  - When non-empty, dispatch and workspace creation are limited to the selected repository.
+
+Repository fields:
+
+- `id` (string)
+  - REQUIRED and unique within `allowed`.
+- `name` (string)
+  - Optional display name.
+- `url` (string or `$VAR`)
+  - REQUIRED for selected repositories.
+- `branch` (string)
+  - Optional branch name for clone/bootstrap.
+- `setup` (string)
+  - Optional shell script run after clone/bootstrap.
+- `tracker.project_slug` (string or `$VAR`)
+  - Optional repository-scoped Linear project slug. When present on the selected repository, it is
+    used as the effective `tracker.project_slug`.
 
 #### 5.3.4 `hooks` (object)
 
@@ -566,7 +595,9 @@ Validation checks:
 - Workflow file can be loaded and parsed.
 - `tracker.kind` is present and supported.
 - `tracker.api_key` is present after `$` resolution.
-- `tracker.project_slug` is present when REQUIRED by the selected tracker kind.
+- Effective `tracker.project_slug` is present when REQUIRED by the selected tracker kind.
+- If `repositories.allowed` is non-empty, `repositories.selected` is present, points to an allowed
+  repository, and that selected repository has a URL.
 - `codex.command` is present and non-empty.
 
 ### 6.4 Core Config Fields Summary (Cheat Sheet)
@@ -578,12 +609,15 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.kind`: string, REQUIRED, currently `linear`
 - `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
 - `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
-- `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear`
+- `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear` unless provided by selected repository
 - `tracker.required_labels`: list of strings, default `[]`
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
 - `polling.interval_ms`: integer, default `30000`
 - `workspace.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
+- `repositories.selected`: string, REQUIRED when `repositories.allowed` is non-empty
+- `repositories.allowed`: list of opt-in repository configs, default `[]`
+- `repositories.allowed[].tracker.project_slug`: selected repository's tracker project override
 - `hooks.after_create`: shell script or null
 - `hooks.before_run`: shell script or null
 - `hooks.after_run`: shell script or null
@@ -712,10 +746,14 @@ Tick sequence:
 
 1. Reconcile running issues.
 2. Run dispatch preflight validation.
-3. Fetch candidate issues from tracker using active states.
-4. Sort issues by dispatch priority.
-5. Dispatch eligible issues while slots remain.
-6. Notify observability/status consumers of state changes.
+3. Monitor configured comment-reply states.
+4. Monitor the configured waiting state:
+   - recover Waiting issues that have no live blocker relation or blocker marker
+   - fetch and dispatch eligible non-terminal blocker issues for Waiting issues
+5. Fetch candidate issues from tracker using active states.
+6. Sort issues by dispatch priority.
+7. Dispatch eligible issues while slots remain.
+8. Notify observability/status consumers of state changes.
 
 If per-tick validation fails, dispatch is skipped for that tick, but reconciliation still happens
 first.
@@ -843,13 +881,16 @@ Algorithm summary:
 3. Ensure the workspace path exists as a directory.
 4. Mark `created_now=true` only if the directory was created during this call; otherwise
    `created_now=false`.
-5. If `created_now=true`, run `after_create` hook if configured.
+5. If a selected repository is configured, populate the workspace from that repository.
+6. If `created_now=true`, run `after_create` hook if configured.
 
 Notes:
 
 - This section does not assume any specific repository/VCS workflow.
 - Workspace preparation beyond directory creation (for example dependency bootstrap, checkout/sync,
   code generation) is implementation-defined and is typically handled via hooks.
+- Implementations that support `repositories.allowed` SHOULD namespace selected-repository
+  workspaces under `workspace.root/<repository-id>/<issue-id>`.
 
 ### 9.3 OPTIONAL Workspace Population (Implementation-Defined)
 
@@ -1160,7 +1201,7 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 - `tracker.kind == "linear"`
 - GraphQL endpoint (default `https://api.linear.app/graphql`)
 - Auth token sent in `Authorization` header
-- `tracker.project_slug` maps to Linear project `slugId`
+- Effective `tracker.project_slug` maps to Linear project `slugId`
 - Candidate issue query filters project using `project: { slugId: { eq: $projectSlug } }`
 - Candidate and issue-state refresh queries include issue labels. Required
   label filtering happens after normalization so refresh can observe label
@@ -1197,7 +1238,7 @@ RECOMMENDED error categories:
 
 - `unsupported_tracker_kind`
 - `missing_tracker_api_key`
-- `missing_tracker_project_slug`
+- `missing_tracker_project_slug` or implementation-specific equivalent for a missing effective project slug
 - `linear_api_request` (transport failures)
 - `linear_api_status` (non-200 HTTP)
 - `linear_graphql_errors`
@@ -1450,8 +1491,8 @@ Minimum endpoints:
     ```
 
 - `GET /api/v1/controls`
-  - Returns operator-editable agent controls such as the Codex model and reasoning effort used for
-    future agent sessions.
+  - Returns operator-facing controls, including the current Codex launch command for visibility and
+    repository selection options for future agent sessions.
 
 - `POST /api/v1/controls`
   - Updates supported operator-editable agent controls.
@@ -1459,8 +1500,7 @@ Minimum endpoints:
 
     ```json
     {
-      "model": "gpt-5",
-      "reasoning_effort": "high"
+      "repository_id": "app"
     }
     ```
 
@@ -1696,6 +1736,8 @@ Possible hardening measures include:
   separate credentials beyond the built-in Codex policy controls.
 - Filtering which Linear issues, projects, teams, labels, or other tracker sources are eligible for
   dispatch so untrusted or out-of-scope tasks do not automatically reach the agent.
+- Requiring an explicit repository allow-list and selected repository before cloning or dispatching
+  work for a codebase.
 - Narrowing the `linear_graphql` tool so it can only read or mutate data inside the
   intended project scope, rather than exposing general workspace-wide tracker access.
 - Reducing the set of client-side tools, credentials, filesystem paths, and network destinations

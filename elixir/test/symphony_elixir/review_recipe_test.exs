@@ -17,7 +17,7 @@ defmodule SymphonyElixir.ReviewRecipeTest do
         ### Demo / Review Recipe
 
         - PR/branch: `https://github.com/example/repo/pull/20`
-        - Open: `https://law-ep.erpnext.com/app/project/Accomack%20County%20Courthouse%202013`
+        - Open: `https://example.test/app/project/alpha`
         - Verify: confirm `Client Info` -> `Metadata` -> `Line Items`, plus `Benefit`, `Time Zone`, and `Contact Phone`
 
         ### Validation
@@ -28,7 +28,7 @@ defmodule SymphonyElixir.ReviewRecipeTest do
     assert {:ok, recipe} = ReviewRecipe.prepare(comments)
 
     assert recipe.workpad_id == "current-workpad"
-    assert recipe.url == "https://law-ep.erpnext.com/app/project/Accomack%20County%20Courthouse%202013"
+    assert recipe.url == "https://example.test/app/project/alpha"
     assert recipe.lane_action == :human_owned
 
     assert recipe.claims == [
@@ -39,6 +39,49 @@ defmodule SymphonyElixir.ReviewRecipeTest do
              "Time Zone",
              "Contact Phone"
            ]
+  end
+
+  test "prepare extracts review credentials without treating them as visible claims" do
+    comments = [
+      %{
+        "id" => "current-workpad",
+        "body" => """
+        ## Codex Workpad
+
+        ### Demo / Review Recipe
+
+        - Open: `https://example.test/app/reports/42`
+        - Login: required; username `reviewer@example.test`; password `review-pass`
+        - Verify: confirm the report shows `Revenue` and `Gross Margin`
+
+        ### Validation
+        """
+      }
+    ]
+
+    assert {:ok, recipe} = ReviewRecipe.prepare(comments)
+
+    assert recipe.credentials == %{username: "reviewer@example.test", password: "review-pass"}
+    assert recipe.claims == ["Revenue", "Gross Margin"]
+  end
+
+  test "prepare rejects auth-required recipes without username and password" do
+    comments = [
+      %{
+        "id" => "current-workpad",
+        "body" => """
+        ## Codex Workpad
+
+        ### Demo / Review Recipe
+
+        - Open: `https://example.test/app/reports/42`
+        - Login: required
+        - Verify: confirm `Revenue`
+        """
+      }
+    ]
+
+    assert {:error, %{reason: :missing_credentials}} = ReviewRecipe.prepare(comments)
   end
 
   test "prepare rejects duplicate active workpads" do
@@ -53,14 +96,14 @@ defmodule SymphonyElixir.ReviewRecipeTest do
 
   test "evaluate passes when browser observation matches route and claims" do
     recipe = %{
-      url: "https://law-ep.erpnext.com/app/project/Accomack%20County%20Courthouse%202013",
+      url: "https://example.test/app/project/alpha",
       claims: ["Client Info", "Metadata", "Line Items"],
       lane_action: :human_owned
     }
 
     observation = %{
-      url: "https://law-ep.erpnext.com/app/project/Accomack%20County%20Courthouse%202013",
-      title: "Accomack County Courthouse 2013",
+      url: "https://example.test/app/project/alpha",
+      title: "Project Alpha",
       visible_text: "Client Info\nMetadata\nLine Items",
       console_errors: [],
       console_warnings: []
@@ -78,14 +121,14 @@ defmodule SymphonyElixir.ReviewRecipeTest do
 
   test "evaluate fails stale or wrong recipe pages without moving lanes" do
     recipe = %{
-      url: "https://law-ep.erpnext.com/app/project/CIR-54%20Live%20Missing%20Fixture",
+      url: "https://example.test/app/project/missing-fixture",
       claims: ["Metadata", "Benefit"],
       lane_action: :human_owned
     }
 
     observation = %{
-      url: "https://law-ep.erpnext.com/app/project/CIR-54%20Live%20Missing%20Fixture",
-      title: "Frappe",
+      url: "https://example.test/app/project/missing-fixture",
+      title: "Example App",
       visible_text: "Sorry! I could not find what you were looking for.",
       console_errors: [],
       console_warnings: []
@@ -101,12 +144,12 @@ defmodule SymphonyElixir.ReviewRecipeTest do
 
   test "evaluate fails login redirects and console errors" do
     recipe = %{
-      url: "https://law-ep.erpnext.com/app/project/Accomack%20County%20Courthouse%202013",
+      url: "https://example.test/app/project/alpha",
       claims: ["Metadata"]
     }
 
     observation = %{
-      url: "https://law-ep.erpnext.com/login?redirect-to=%2Fapp%2Fproject",
+      url: "https://example.test/login?redirect-to=%2Fapp%2Fproject",
       title: "Login",
       visible_text: "Metadata",
       console_errors: ["Failed request"],

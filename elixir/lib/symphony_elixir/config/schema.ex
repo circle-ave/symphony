@@ -98,6 +98,9 @@ defmodule SymphonyElixir.Config.Schema do
     import Ecto.Changeset
 
     @primary_key false
+
+    @type t :: %__MODULE__{}
+
     embedded_schema do
       field(:interval_ms, :integer, default: 30_000)
     end
@@ -116,6 +119,9 @@ defmodule SymphonyElixir.Config.Schema do
     import Ecto.Changeset
 
     @primary_key false
+
+    @type t :: %__MODULE__{}
+
     embedded_schema do
       field(:root, :string, default: Path.join(System.tmp_dir!(), "symphony_workspaces"))
     end
@@ -124,6 +130,73 @@ defmodule SymphonyElixir.Config.Schema do
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:root], empty_values: [])
+    end
+  end
+
+  defmodule RepositoryTracker do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+
+    @type t :: %__MODULE__{}
+
+    embedded_schema do
+      field(:project_slug, :string)
+      field(:assignee, :string)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:project_slug, :assignee], empty_values: [])
+    end
+  end
+
+  defmodule Repository do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    alias SymphonyElixir.Config.Schema.RepositoryTracker
+
+    @primary_key false
+    embedded_schema do
+      field(:id, :string)
+      field(:name, :string)
+      field(:url, :string)
+      field(:branch, :string)
+      field(:setup, :string)
+      embeds_one(:tracker, RepositoryTracker, on_replace: :update, defaults_to_struct: true)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:id, :name, :url, :branch, :setup], empty_values: [])
+      |> cast_embed(:tracker, with: &RepositoryTracker.changeset/2)
+    end
+  end
+
+  defmodule Repositories do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    alias SymphonyElixir.Config.Schema.Repository
+
+    @primary_key false
+    embedded_schema do
+      field(:selected, :string)
+      embeds_many(:allowed, Repository, on_replace: :delete)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:selected], empty_values: [])
+      |> cast_embed(:allowed, with: &Repository.changeset/2)
     end
   end
 
@@ -307,6 +380,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:repositories, Repositories, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
@@ -482,6 +556,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
+    |> cast_embed(:repositories, with: &Repositories.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
@@ -491,15 +566,19 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp finalize_settings(settings) do
-    tracker = %{
-      settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        oauth_access_token: resolve_secret_setting(settings.tracker.oauth_access_token, System.get_env("LINEAR_OAUTH_ACCESS_TOKEN")),
-        oauth_client_id: resolve_secret_setting(settings.tracker.oauth_client_id, System.get_env("LINEAR_OAUTH_CLIENT_ID")),
-        oauth_client_secret: resolve_secret_setting(settings.tracker.oauth_client_secret, System.get_env("LINEAR_OAUTH_CLIENT_SECRET")),
-        oauth_scope: resolve_secret_setting(settings.tracker.oauth_scope, System.get_env("LINEAR_OAUTH_SCOPE") || "read,write"),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
-    }
+    repositories = finalize_repositories(settings.repositories)
+
+    tracker =
+      %{
+        settings.tracker
+        | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
+          oauth_access_token: resolve_secret_setting(settings.tracker.oauth_access_token, System.get_env("LINEAR_OAUTH_ACCESS_TOKEN")),
+          oauth_client_id: resolve_secret_setting(settings.tracker.oauth_client_id, System.get_env("LINEAR_OAUTH_CLIENT_ID")),
+          oauth_client_secret: resolve_secret_setting(settings.tracker.oauth_client_secret, System.get_env("LINEAR_OAUTH_CLIENT_SECRET")),
+          oauth_scope: resolve_secret_setting(settings.tracker.oauth_scope, System.get_env("LINEAR_OAUTH_SCOPE") || "read,write"),
+          assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+      }
+      |> merge_selected_repository_tracker(repositories)
 
     workspace = %{
       settings.workspace
@@ -512,8 +591,57 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    %{settings | tracker: tracker, workspace: workspace, repositories: repositories, codex: codex}
   end
+
+  defp finalize_repositories(%Repositories{} = repositories) do
+    %{
+      repositories
+      | selected: normalize_optional_string(repositories.selected),
+        allowed: Enum.map(repositories.allowed || [], &finalize_repository/1)
+    }
+  end
+
+  defp finalize_repository(%Repository{} = repository) do
+    tracker = repository.tracker || %RepositoryTracker{}
+
+    %{
+      repository
+      | id: normalize_optional_string(repository.id),
+        name: normalize_optional_string(repository.name),
+        url: resolve_optional_string(repository.url),
+        branch: normalize_optional_string(repository.branch),
+        setup: normalize_optional_string(repository.setup),
+        tracker: %{
+          tracker
+          | project_slug: normalize_optional_string(tracker.project_slug),
+            assignee: resolve_secret_setting(tracker.assignee, nil)
+        }
+    }
+  end
+
+  defp merge_selected_repository_tracker(tracker, repositories) do
+    case selected_repository(repositories) do
+      %Repository{tracker: %RepositoryTracker{} = repository_tracker} ->
+        %{
+          tracker
+          | project_slug: repository_tracker.project_slug || tracker.project_slug,
+            assignee: repository_tracker.assignee || tracker.assignee
+        }
+
+      _ ->
+        tracker
+    end
+  end
+
+  @doc false
+  @spec selected_repository(struct() | nil) :: struct() | nil
+  def selected_repository(%Repositories{selected: selected, allowed: allowed})
+      when is_binary(selected) and is_list(allowed) do
+    Enum.find(allowed, &(&1.id == selected))
+  end
+
+  def selected_repository(_repositories), do: nil
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
@@ -562,6 +690,21 @@ defmodule SymphonyElixir.Config.Schema do
       path ->
         path
     end
+  end
+
+  defp resolve_optional_string(nil), do: nil
+
+  defp resolve_optional_string(value) when is_binary(value) do
+    value
+    |> resolve_env_value(nil)
+    |> normalize_optional_string()
+  end
+
+  defp normalize_optional_string(nil), do: nil
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
   end
 
   defp resolve_env_value(value, fallback) when is_binary(value) do

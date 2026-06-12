@@ -70,12 +70,22 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, value), do: System.put_env(key, value)
 
   def stop_default_http_server do
-    case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
+    supervisor = Process.whereis(SymphonyElixir.Supervisor)
+
+    if is_nil(supervisor) do
+      :ok
+    else
+      stop_default_http_server(supervisor)
+    end
+  end
+
+  defp stop_default_http_server(supervisor) do
+    case Enum.find(Supervisor.which_children(supervisor), fn
            {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
            _child -> false
          end) do
       {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) ->
-        :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
+        :ok = Supervisor.terminate_child(supervisor, SymphonyElixir.HttpServer)
 
         if Process.alive?(pid) do
           Process.exit(pid, :normal)
@@ -104,6 +114,8 @@ defmodule SymphonyElixir.TestSupport do
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
+          repositories_selected: nil,
+          repositories_allowed: [],
           worker_ssh_hosts: [],
           worker_max_concurrent_agents_per_host: nil,
           max_concurrent_agents: 10,
@@ -147,6 +159,8 @@ defmodule SymphonyElixir.TestSupport do
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
     workspace_root = Keyword.get(config, :workspace_root)
+    repositories_selected = Keyword.get(config, :repositories_selected)
+    repositories_allowed = Keyword.get(config, :repositories_allowed)
     worker_ssh_hosts = Keyword.get(config, :worker_ssh_hosts)
     worker_max_concurrent_agents_per_host = Keyword.get(config, :worker_max_concurrent_agents_per_host)
     max_concurrent_agents = Keyword.get(config, :max_concurrent_agents)
@@ -193,6 +207,7 @@ defmodule SymphonyElixir.TestSupport do
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
         "workspace:",
         "  root: #{yaml_value(workspace_root)}",
+        repositories_yaml(repositories_selected, repositories_allowed),
         worker_yaml(worker_ssh_hosts, worker_max_concurrent_agents_per_host),
         "agent:",
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
@@ -242,6 +257,55 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp yaml_value(value), do: yaml_value(to_string(value))
+
+  defp repositories_yaml(_selected, allowed) when allowed in [nil, []], do: nil
+
+  defp repositories_yaml(selected, allowed) when is_list(allowed) do
+    [
+      "repositories:",
+      "  selected: #{yaml_value(selected)}",
+      "  allowed:",
+      Enum.map(allowed, &repository_yaml/1)
+    ]
+    |> List.flatten()
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp repository_yaml(repository) when is_map(repository) do
+    tracker = map_get(repository, :tracker) || %{}
+
+    [
+      "    - id: #{yaml_value(map_get(repository, :id))}",
+      "      name: #{yaml_value(map_get(repository, :name))}",
+      "      url: #{yaml_value(map_get(repository, :url))}",
+      "      branch: #{yaml_value(map_get(repository, :branch))}",
+      repository_setup_yaml(map_get(repository, :setup)),
+      repository_tracker_yaml(tracker)
+    ]
+    |> List.flatten()
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp repository_setup_yaml(nil), do: nil
+
+  defp repository_setup_yaml(setup) when is_binary(setup) do
+    ["      setup: |" | Enum.map(String.split(setup, "\n", trim: false), &"        #{&1}")]
+  end
+
+  defp repository_tracker_yaml(tracker) when map_size(tracker) == 0, do: nil
+
+  defp repository_tracker_yaml(tracker) do
+    [
+      "      tracker:",
+      "        project_slug: #{yaml_value(map_get(tracker, :project_slug))}",
+      "        assignee: #{yaml_value(map_get(tracker, :assignee))}"
+    ]
+  end
+
+  defp map_get(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
 
   defp hooks_yaml(nil, nil, nil, nil, timeout_ms), do: "hooks:\n  timeout_ms: #{yaml_value(timeout_ms)}"
 

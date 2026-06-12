@@ -21,6 +21,7 @@ defmodule SymphonyElixir.Workspace do
       with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
            :ok <- validate_workspace_path(workspace, worker_host),
            {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
+           :ok <- maybe_bootstrap_selected_repository(workspace, issue_context, created?, worker_host),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
         {:ok, workspace}
       end
@@ -195,16 +196,57 @@ defmodule SymphonyElixir.Workspace do
 
   defp workspace_path_for_issue(safe_id, nil) when is_binary(safe_id) do
     Config.settings!().workspace.root
-    |> Path.join(safe_id)
+    |> Path.join(workspace_relative_path(safe_id))
     |> PathSafety.canonicalize()
   end
 
   defp workspace_path_for_issue(safe_id, worker_host) when is_binary(safe_id) and is_binary(worker_host) do
-    {:ok, Path.join(Config.settings!().workspace.root, safe_id)}
+    {:ok, Path.join(Config.settings!().workspace.root, workspace_relative_path(safe_id))}
   end
 
   defp safe_identifier(identifier) do
     String.replace(identifier || "issue", ~r/[^a-zA-Z0-9._-]/, "_")
+  end
+
+  defp workspace_relative_path(safe_id) do
+    case Config.selected_repository() do
+      %{id: repository_id} when is_binary(repository_id) and repository_id != "" ->
+        Path.join(safe_identifier(repository_id), safe_id)
+
+      _ ->
+        safe_id
+    end
+  end
+
+  defp maybe_bootstrap_selected_repository(workspace, issue_context, true, worker_host) do
+    case Config.selected_repository() do
+      %{url: url} = repository when is_binary(url) and url != "" ->
+        run_hook(repository_bootstrap_command(repository), workspace, issue_context, "repository", worker_host)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp maybe_bootstrap_selected_repository(_workspace, _issue_context, false, _worker_host), do: :ok
+
+  defp repository_bootstrap_command(repository) do
+    [
+      repository_clone_command(repository),
+      Map.get(repository, :setup)
+    ]
+    |> Enum.reject(&(is_nil(&1) or String.trim(&1) == ""))
+    |> Enum.join("\n")
+  end
+
+  defp repository_clone_command(repository) do
+    branch_arg =
+      case Map.get(repository, :branch) do
+        branch when is_binary(branch) and branch != "" -> " --branch #{shell_escape(branch)}"
+        _ -> ""
+      end
+
+    "git clone --depth 1#{branch_arg} #{shell_escape(repository.url)} ."
   end
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do

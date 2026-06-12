@@ -31,6 +31,10 @@ issue claimed and exposes it as blocked in the runtime state, JSON API, and dash
 entries are in memory only; restarting the orchestrator clears that blocked map, so any still-active
 Linear issue can become a dispatch candidate again after restart.
 
+When `tracker.waiting_state` is configured, Symphony also monitors Waiting issues. Unblocked Waiting
+issues are returned to active work, and Waiting issues with live non-terminal Linear blockers cause
+their eligible blocker tickets to be dispatched before normal active-ticket dispatch.
+
 ## How to use it
 
 1. Make sure your codebase is set up to work well with agents: see
@@ -94,12 +98,20 @@ Minimal example:
 ---
 tracker:
   kind: linear
-  project_slug: "..."
 workspace:
   root: ~/code/workspaces
+repositories:
+  selected: app
+  allowed:
+    - id: app
+      name: App
+      url: git@github.com:your-org/your-repo.git
+      branch: main
+      tracker:
+        project_slug: "..."
 hooks:
   after_create: |
-    git clone git@github.com:your-org/your-repo.git .
+    mix deps.get
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -134,8 +146,13 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
-- Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
-  `git clone ... .` there, along with any other setup commands you need.
+- Use `repositories.allowed` to opt in the exact repositories Symphony may clone. New workspaces are
+  created under `workspace.root/<repository-id>/<issue-id>`.
+- `repositories.selected` chooses the active repository. The dashboard controls can switch between
+  configured repositories for future dispatches.
+- A repository can provide its own `tracker.project_slug`; this keeps tracker board selection tied to
+  an explicitly selected repository instead of a global default.
+- Use `hooks.after_create` for setup after the selected repository has been cloned.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
@@ -149,9 +166,13 @@ tracker:
   api_key: $LINEAR_API_KEY
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
-hooks:
-  after_create: |
-    git clone --depth 1 "$SOURCE_REPO_URL" .
+repositories:
+  selected: app
+  allowed:
+    - id: app
+      url: $SOURCE_REPO_URL
+      tracker:
+        project_slug: $LINEAR_PROJECT_SLUG
 codex:
   command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' app-server"
 ```
@@ -168,7 +189,7 @@ The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
 - JSON API for operational debugging under `/api/v1/*`
-- Agent model and reasoning-effort controls for future Codex sessions
+- Repository selection controls for future Codex sessions
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`

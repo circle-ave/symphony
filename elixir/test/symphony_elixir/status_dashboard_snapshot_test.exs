@@ -181,7 +181,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              run: "pre_dispatch",
              next_due_in_ms: 120_000,
              last_duration_ms: 1_250,
-             last_output: "CIR-92 live-cloud-hash-blocker\nCIR-94 live-cloud-hash-blocker"
+             last_output: "MT-92 live-cloud-hash-blocker\nMT-94 live-cloud-hash-blocker"
            }
          ]
        }}
@@ -191,7 +191,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     assert rendered =~ "Operator roles"
     assert rendered =~ "waiting_blocker_audit"
     assert rendered =~ "120.000s"
-    assert rendered =~ "detail=CIR-92 live-cloud-hash-blocker CIR-94 live-cloud-hash-blocker"
+    assert rendered =~ "detail=MT-92 live-cloud-hash-blocker MT-94 live-cloud-hash-blocker"
   end
 
   test "snapshot fixture: unlimited credits variant" do

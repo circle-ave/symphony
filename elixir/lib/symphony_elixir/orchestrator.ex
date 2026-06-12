@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace, Workflow}
+  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workflow, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -32,6 +32,8 @@ defmodule SymphonyElixir.Orchestrator do
   ]
   @comment_reply_reserved_slots 1
   @comment_reply_marker "<!-- symphony-comment-reply -->"
+  @comment_reply_monitor_role_name "linear_comment_monitor"
+  @waiting_blocker_role_name "waiting_blocker_audit"
   @waiting_auto_recovery_marker "<!-- symphony-waiting-auto-recovery -->"
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
@@ -66,6 +68,8 @@ defmodule SymphonyElixir.Orchestrator do
       codex_rate_limits: nil,
       agent_role_due_at_ms: %{},
       agent_role_status: %{},
+      comment_reply_monitor_status: nil,
+      waiting_blocker_monitor_status: nil,
       comment_reply_seen: nil,
       comment_reply_reserve_active: false
     ]
@@ -495,76 +499,145 @@ defmodule SymphonyElixir.Orchestrator do
       |> reconcile_blocked_issues()
 
     with :ok <- Config.validate!(),
-         :ok <- maybe_recover_waiting_issues(),
-         {:ok, issues} <- Tracker.fetch_candidate_issues(),
-         {:ok, comment_reply_issues} <- fetch_comment_reply_issues() do
-      state = bootstrap_comment_reply_seen(state, comment_reply_issues)
-      state = update_comment_reply_reserve(state, comment_reply_issues)
-      state = choose_comment_reply_issues(comment_reply_issues, state)
-      state = update_comment_reply_reserve(state, comment_reply_issues)
+         {:ok, state} <- run_comment_reply_monitor(state),
+         {:ok, state} <- run_waiting_blocker_monitor(state),
+         {:ok, issues} <- Tracker.fetch_candidate_issues() do
       {choose_issues(issues, state), nil}
     else
-      {:error, :missing_linear_api_token} ->
-        Logger.error("Linear API token missing in WORKFLOW.md")
-        {state, nil}
-
-      {:error, :missing_linear_project_slug} ->
-        Logger.error("Linear project slug missing in WORKFLOW.md")
-        {state, nil}
-
-      {:error, :missing_tracker_kind} ->
-        Logger.error("Tracker kind missing in WORKFLOW.md")
-
-        {state, nil}
-
-      {:error, {:unsupported_tracker_kind, kind}} ->
-        Logger.error("Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}")
-
-        {state, nil}
-
-      {:error, {:invalid_workflow_config, message}} ->
-        Logger.error("Invalid WORKFLOW.md config: #{message}")
-        {state, nil}
-
-      {:error, {:missing_workflow_file, path, reason}} ->
-        Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
-        {state, nil}
-
-      {:error, :workflow_front_matter_not_a_map} ->
-        Logger.error("Failed to parse WORKFLOW.md: workflow front matter must decode to a map")
-        {state, nil}
-
-      {:error, {:workflow_parse_error, reason}} ->
-        Logger.error("Failed to parse WORKFLOW.md: #{inspect(reason)}")
-        {state, nil}
-
-      {:error, {:linear_rate_limited, _remaining_ms} = reason} ->
-        poll_delay_ms = poll_backoff_delay_ms(state, reason)
-        Logger.warning("Linear rate limited; backing off polling for #{poll_delay_ms}ms: #{inspect(reason)}")
-        {state, poll_delay_ms}
-
-      {:error, reason} ->
-        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
-        {state, nil}
+      {:error, reason, %State{} = state} -> handle_dispatch_error(state, reason)
+      {:error, reason} -> handle_dispatch_error(state, reason)
     end
   end
 
-  defp maybe_recover_waiting_issues do
+  defp handle_dispatch_error(state, :missing_linear_api_token) do
+    Logger.error("Linear API token missing in WORKFLOW.md")
+    {state, nil}
+  end
+
+  defp handle_dispatch_error(state, :missing_linear_project_slug) do
+    Logger.error("Linear project slug missing in WORKFLOW.md")
+    {state, nil}
+  end
+
+  defp handle_dispatch_error(state, :missing_tracker_kind) do
+    Logger.error("Tracker kind missing in WORKFLOW.md")
+    {state, nil}
+  end
+
+  defp handle_dispatch_error(state, {:unsupported_tracker_kind, kind}) do
+    Logger.error("Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}")
+    {state, nil}
+  end
+
+  defp handle_dispatch_error(state, :missing_selected_repository) do
+    Logger.error("Repository selector has no selected repository in WORKFLOW.md")
+    {state, nil}
+  end
+
+  defp handle_dispatch_error(state, {:unknown_selected_repository, repository_id}) do
+    Logger.error("Selected repository is not in repositories.allowed: #{inspect(repository_id)}")
+    {state, nil}
+  end
+
+  defp handle_dispatch_error(state, {:invalid_repository, repository_id, reason}) do
+    Logger.error("Selected repository is invalid: #{inspect(repository_id)} reason=#{inspect(reason)}")
+    {state, nil}
+  end
+
+  defp handle_dispatch_error(state, :duplicate_repository_ids) do
+    Logger.error("Repository selector has duplicate repository ids in WORKFLOW.md")
+    {state, nil}
+  end
+
+  defp handle_dispatch_error(state, {:invalid_workflow_config, message}) do
+    Logger.error("Invalid WORKFLOW.md config: #{message}")
+    {state, nil}
+  end
+
+  defp handle_dispatch_error(state, {:missing_workflow_file, path, reason}) do
+    Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
+    {state, nil}
+  end
+
+  defp handle_dispatch_error(state, :workflow_front_matter_not_a_map) do
+    Logger.error("Failed to parse WORKFLOW.md: workflow front matter must decode to a map")
+    {state, nil}
+  end
+
+  defp handle_dispatch_error(state, {:workflow_parse_error, reason}) do
+    Logger.error("Failed to parse WORKFLOW.md: #{inspect(reason)}")
+    {state, nil}
+  end
+
+  defp handle_dispatch_error(state, {:linear_rate_limited, _remaining_ms} = reason) do
+    poll_delay_ms = poll_backoff_delay_ms(state, reason)
+    Logger.warning("Linear rate limited; backing off polling for #{poll_delay_ms}ms: #{inspect(reason)}")
+    {state, poll_delay_ms}
+  end
+
+  defp handle_dispatch_error(state, reason) do
+    Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+    {state, nil}
+  end
+
+  defp run_waiting_blocker_monitor(%State{} = state) do
+    started_at = DateTime.utc_now()
+    started_ms = System.monotonic_time(:millisecond)
+
     case configured_waiting_state() do
-      nil -> :ok
-      waiting_state -> recover_waiting_issues_by_state(waiting_state)
+      nil ->
+        {:ok, record_waiting_blocker_monitor_disabled(state, started_at, started_ms)}
+
+      waiting_state ->
+        run_waiting_blocker_monitor_for_state(state, waiting_state, started_at, started_ms)
     end
   end
 
-  defp recover_waiting_issues_by_state(waiting_state) do
+  defp run_waiting_blocker_monitor_for_state(%State{} = state, waiting_state, started_at, started_ms) do
     case Tracker.fetch_issues_by_states([waiting_state]) do
       {:ok, issues} ->
-        Enum.each(issues, &maybe_recover_waiting_issue/1)
-        :ok
+        run_waiting_blocker_monitor_for_issues(state, waiting_state, issues, started_at, started_ms)
 
       {:error, reason} ->
-        Logger.warning("Skipping Waiting recovery sweep; failed to fetch Waiting issues: #{inspect(reason)}")
-        if linear_rate_limit_error?(reason), do: {:error, reason}, else: :ok
+        Logger.warning("Skipping Waiting blocker monitor; failed to fetch Waiting issues: #{inspect(reason)}")
+
+        state =
+          record_waiting_blocker_monitor_error(state, waiting_state, started_at, started_ms, reason)
+
+        if linear_rate_limit_error?(reason), do: {:error, reason, state}, else: {:ok, state}
+    end
+  end
+
+  defp run_waiting_blocker_monitor_for_issues(%State{} = state, waiting_state, issues, started_at, started_ms)
+       when is_list(issues) do
+    terminal_states = terminal_state_set()
+    blocker_refs = waiting_blocker_refs(issues, terminal_states)
+    blocker_ids = waiting_blocker_ids(blocker_refs)
+    recovered_count = recover_unblocked_waiting_issues(issues, terminal_states)
+
+    case fetch_waiting_blocker_issues(blocker_ids) do
+      {:ok, blocker_issues} ->
+        {state, dispatched_count} = dispatch_waiting_blocker_issues(state, blocker_issues, terminal_states)
+
+        {:ok,
+         record_waiting_blocker_monitor_success(state, %{
+           waiting_state: waiting_state,
+           started_at: started_at,
+           started_ms: started_ms,
+           waiting_issues: issues,
+           blocker_refs: blocker_refs,
+           blocker_issues: blocker_issues,
+           recovered_count: recovered_count,
+           dispatched_count: dispatched_count
+         })}
+
+      {:error, reason} ->
+        Logger.warning("Skipping Waiting blocker dispatch; failed to fetch blocker issues: #{inspect(reason)}")
+
+        state =
+          record_waiting_blocker_monitor_error(state, waiting_state, started_at, started_ms, reason)
+
+        if linear_rate_limit_error?(reason), do: {:error, reason, state}, else: {:ok, state}
     end
   end
 
@@ -579,22 +652,146 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp maybe_recover_waiting_issue(%Issue{} = issue) do
-    terminal_states = terminal_state_set()
+  defp recover_unblocked_waiting_issues(issues, terminal_states) when is_list(issues) do
+    Enum.count(issues, fn
+      %Issue{} = issue ->
+        recoverable_waiting_issue?(issue, terminal_states) and recover_waiting_issue(issue) == :ok
 
-    cond do
-      issue_blocked_by_non_terminal?(issue, terminal_states) ->
-        :ok
-
-      waiting_issue_has_blocker_marker?(issue) ->
-        :ok
-
-      true ->
-        recover_waiting_issue(issue)
-    end
+      _ ->
+        false
+    end)
   end
 
-  defp maybe_recover_waiting_issue(_issue), do: :ok
+  defp recoverable_waiting_issue?(%Issue{} = issue, terminal_states) do
+    !issue_blocked_by_non_terminal?(issue, terminal_states) and !waiting_issue_has_blocker_marker?(issue)
+  end
+
+  defp waiting_blocker_refs(issues, terminal_states) when is_list(issues) do
+    Enum.flat_map(issues, &issue_non_terminal_blocker_refs(&1, terminal_states))
+  end
+
+  defp issue_non_terminal_blocker_refs(%Issue{blocked_by: blockers}, terminal_states) when is_list(blockers) do
+    Enum.filter(blockers, &non_terminal_blocker_ref?(&1, terminal_states))
+  end
+
+  defp issue_non_terminal_blocker_refs(_issue, _terminal_states), do: []
+
+  defp non_terminal_blocker_ref?(%{state: blocker_state}, terminal_states) when is_binary(blocker_state) do
+    !terminal_issue_state?(blocker_state, terminal_states)
+  end
+
+  defp non_terminal_blocker_ref?(_blocker_ref, _terminal_states), do: true
+
+  defp waiting_blocker_ids(blocker_refs) when is_list(blocker_refs) do
+    blocker_refs
+    |> Enum.flat_map(fn
+      %{id: issue_id} when is_binary(issue_id) -> [issue_id]
+      _ -> []
+    end)
+    |> Enum.uniq()
+  end
+
+  defp fetch_waiting_blocker_issues([]), do: {:ok, []}
+  defp fetch_waiting_blocker_issues(issue_ids), do: Tracker.fetch_issue_states_by_ids(issue_ids)
+
+  defp dispatch_waiting_blocker_issues(%State{} = state, issues, terminal_states) when is_list(issues) do
+    active_states = active_state_set()
+
+    issues
+    |> sort_issues_for_dispatch()
+    |> Enum.reduce({state, 0}, fn
+      %Issue{} = issue, {state_acc, count} ->
+        if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
+          Logger.info("Dispatching Waiting blocker issue: #{issue_context(issue)} state=#{issue.state}")
+          {dispatch_issue(state_acc, issue), count + 1}
+        else
+          {state_acc, count}
+        end
+
+      _issue, acc ->
+        acc
+    end)
+  end
+
+  defp record_waiting_blocker_monitor_disabled(%State{} = state, started_at, started_ms) do
+    %{
+      state
+      | waiting_blocker_monitor_status: waiting_blocker_monitor_status("disabled", nil, started_at, started_ms)
+    }
+  end
+
+  defp record_waiting_blocker_monitor_success(%State{} = state, result) when is_map(result) do
+    waiting_issues = Map.get(result, :waiting_issues, [])
+    blocker_refs = Map.get(result, :blocker_refs, [])
+    blocker_issues = Map.get(result, :blocker_issues, [])
+    recovered_count = Map.get(result, :recovered_count, 0)
+    dispatched_count = Map.get(result, :dispatched_count, 0)
+
+    status =
+      waiting_blocker_monitor_status("ok", result[:waiting_state], result[:started_at], result[:started_ms])
+      |> Map.merge(%{
+        scanned_count: length(waiting_issues),
+        blocked_waiting_count: waiting_blocked_issue_count(waiting_issues),
+        blocker_ref_count: length(blocker_refs),
+        blocker_candidate_count: length(blocker_issues),
+        recovered_count: recovered_count,
+        dispatched_count: dispatched_count,
+        latest_issue_identifiers: waiting_blocker_identifiers(blocker_issues),
+        last_output:
+          "scanned=#{length(waiting_issues)} waiting_blocked=#{waiting_blocked_issue_count(waiting_issues)} blocker_refs=#{length(blocker_refs)} candidates=#{length(blocker_issues)} recovered=#{recovered_count} dispatched=#{dispatched_count}"
+      })
+
+    %{state | waiting_blocker_monitor_status: status}
+  end
+
+  defp record_waiting_blocker_monitor_error(%State{} = state, waiting_state, started_at, started_ms, reason) do
+    status =
+      waiting_blocker_monitor_status("failed", waiting_state, started_at, started_ms)
+      |> Map.merge(%{
+        last_error: inspect(reason),
+        last_output: "waiting blocker monitor failed: #{inspect(reason)}"
+      })
+
+    %{state | waiting_blocker_monitor_status: status}
+  end
+
+  defp waiting_blocker_monitor_status(status, waiting_state, started_at, started_ms) do
+    %{
+      status: status,
+      waiting_state: waiting_state,
+      last_started_at: started_at,
+      last_finished_at: DateTime.utc_now(),
+      last_duration_ms: max(System.monotonic_time(:millisecond) - started_ms, 0),
+      last_exit_status: nil,
+      last_error: nil,
+      last_output: nil,
+      scanned_count: 0,
+      blocked_waiting_count: 0,
+      blocker_ref_count: 0,
+      blocker_candidate_count: 0,
+      recovered_count: 0,
+      dispatched_count: 0,
+      latest_issue_identifiers: []
+    }
+  end
+
+  defp waiting_blocked_issue_count(issues) when is_list(issues) do
+    terminal_states = terminal_state_set()
+
+    Enum.count(issues, fn
+      %Issue{} = issue -> issue_non_terminal_blocker_refs(issue, terminal_states) != []
+      _ -> false
+    end)
+  end
+
+  defp waiting_blocker_identifiers(issues) when is_list(issues) do
+    issues
+    |> Enum.flat_map(fn
+      %Issue{identifier: identifier} when is_binary(identifier) -> [identifier]
+      _ -> []
+    end)
+    |> Enum.take(12)
+  end
 
   defp issue_blocked_by_non_terminal?(%Issue{blocked_by: blockers}, terminal_states) when is_list(blockers) do
     Enum.any?(blockers, fn
@@ -624,20 +821,22 @@ defmodule SymphonyElixir.Orchestrator do
     case waiting_recovery_state() do
       nil ->
         Logger.warning("Skipping Waiting recovery for #{issue_context(issue)}; no active recovery state is configured")
-        :ok
+        :skipped
 
       recovery_state ->
         with :ok <- ensure_waiting_recovery_comment(issue, recovery_state),
              :ok <- Tracker.update_issue_state(issue_id, recovery_state) do
           Logger.info("Recovered unblocked Waiting issue: issue_id=#{issue_id} issue_identifier=#{identifier} state=#{recovery_state}")
+          :ok
         else
           {:error, reason} ->
             Logger.warning("Waiting recovery failed for #{issue_context(issue)}: #{inspect(reason)}")
+            {:error, reason}
         end
     end
   end
 
-  defp recover_waiting_issue(_issue), do: :ok
+  defp recover_waiting_issue(_issue), do: :skipped
 
   defp waiting_recovery_state do
     active_states = Config.settings!().tracker.active_states
@@ -722,7 +921,19 @@ defmodule SymphonyElixir.Orchestrator do
   defp issue_workspace_path(identifier) do
     Config.settings!().workspace.root
     |> Path.expand()
-    |> Path.join(identifier)
+    |> Path.join(issue_workspace_relative_path(identifier))
+  end
+
+  defp issue_workspace_relative_path(identifier) do
+    safe_identifier = safe_workspace_identifier(identifier)
+
+    case Config.selected_repository() do
+      %{id: repository_id} when is_binary(repository_id) and repository_id != "" ->
+        Path.join(safe_workspace_identifier(repository_id), safe_identifier)
+
+      _ ->
+        safe_identifier
+    end
   end
 
   defp reconcile_running_issues(%State{} = state) do
@@ -849,6 +1060,13 @@ defmodule SymphonyElixir.Orchestrator do
   def run_due_agent_roles_for_test(%State{} = state, phase, now_ms)
       when is_atom(phase) and is_integer(now_ms) do
     run_due_agent_roles(state, phase, now_ms)
+  end
+
+  @doc false
+  @spec run_waiting_blocker_monitor_for_test(State.t()) ::
+          {:ok, State.t()} | {:error, term(), State.t()}
+  def run_waiting_blocker_monitor_for_test(%State{} = state) do
+    run_waiting_blocker_monitor(state)
   end
 
   @doc false
@@ -1325,17 +1543,110 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
-  defp fetch_comment_reply_issues do
-    states =
-      Config.settings!().tracker.comment_reply_states
-      |> Enum.map(&to_string/1)
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == ""))
+  defp run_comment_reply_monitor(%State{} = state) do
+    states = comment_reply_monitor_states()
+    started_at = DateTime.utc_now()
+    started_ms = System.monotonic_time(:millisecond)
 
+    if states == [] do
+      {:ok, record_comment_reply_monitor_disabled(state, started_at, started_ms)}
+    else
+      case fetch_comment_reply_issues(states) do
+        {:ok, comment_reply_issues} ->
+          state = bootstrap_comment_reply_seen(state, comment_reply_issues)
+          pending_count = count_pending_comment_reply_issues(comment_reply_issues, state)
+          state = update_comment_reply_reserve(state, comment_reply_issues)
+          {state, dispatched_count} = choose_comment_reply_issues(comment_reply_issues, state)
+          state = update_comment_reply_reserve(state, comment_reply_issues)
+
+          {:ok,
+           record_comment_reply_monitor_success(
+             state,
+             states,
+             started_at,
+             started_ms,
+             comment_reply_issues,
+             pending_count,
+             dispatched_count
+           )}
+
+        {:error, reason} ->
+          {:error, reason, record_comment_reply_monitor_error(state, states, started_at, started_ms, reason)}
+      end
+    end
+  end
+
+  defp fetch_comment_reply_issues(states) when is_list(states) do
     case states do
       [] -> {:ok, []}
       states -> Tracker.fetch_issues_by_states(states)
     end
+  end
+
+  defp comment_reply_monitor_states do
+    Config.settings!().tracker.comment_reply_states
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq_by(&normalize_issue_state/1)
+  end
+
+  defp record_comment_reply_monitor_disabled(%State{} = state, started_at, started_ms) do
+    %{state | comment_reply_monitor_status: comment_reply_monitor_status("disabled", [], started_at, started_ms)}
+  end
+
+  defp record_comment_reply_monitor_success(
+         %State{} = state,
+         states,
+         started_at,
+         started_ms,
+         issues,
+         pending_count,
+         dispatched_count
+       ) do
+    actionable_issues = Enum.filter(issues, &is_binary(&1.latest_comment_id))
+
+    status =
+      comment_reply_monitor_status("ok", states, started_at, started_ms)
+      |> Map.merge(%{
+        scanned_count: length(issues),
+        actionable_count: length(actionable_issues),
+        pending_count: pending_count,
+        dispatched_count: dispatched_count,
+        latest_issue_identifiers: Enum.map(actionable_issues, & &1.identifier) |> Enum.take(12),
+        last_output: "scanned=#{length(issues)} actionable=#{length(actionable_issues)} pending=#{pending_count} dispatched=#{dispatched_count}"
+      })
+
+    %{state | comment_reply_monitor_status: status}
+  end
+
+  defp record_comment_reply_monitor_error(%State{} = state, states, started_at, started_ms, reason) do
+    status =
+      comment_reply_monitor_status("failed", states, started_at, started_ms)
+      |> Map.merge(%{
+        last_error: inspect(reason),
+        last_output: "comment monitor failed: #{inspect(reason)}"
+      })
+
+    %{state | comment_reply_monitor_status: status}
+  end
+
+  defp comment_reply_monitor_status(status, states, started_at, started_ms) do
+    %{
+      status: status,
+      states: states,
+      last_started_at: started_at,
+      last_finished_at: DateTime.utc_now(),
+      last_duration_ms: max(System.monotonic_time(:millisecond) - started_ms, 0),
+      last_exit_status: nil,
+      last_error: nil,
+      last_output: nil,
+      scanned_count: 0,
+      actionable_count: 0,
+      pending_count: 0,
+      dispatched_count: 0,
+      latest_issue_identifiers: []
+    }
   end
 
   defp bootstrap_comment_reply_seen(%State{comment_reply_seen: nil} = state, issues)
@@ -1363,13 +1674,18 @@ defmodule SymphonyElixir.Orchestrator do
 
     issues
     |> sort_issues_for_dispatch()
-    |> Enum.reduce(state, fn issue, state_acc ->
+    |> Enum.reduce({state, 0}, fn issue, {state_acc, count} ->
       if should_dispatch_comment_reply_issue?(issue, state_acc, terminal_states) do
-        dispatch_comment_reply_issue(state_acc, issue)
+        {dispatch_comment_reply_issue(state_acc, issue), count + 1}
       else
-        state_acc
+        {state_acc, count}
       end
     end)
+  end
+
+  defp count_pending_comment_reply_issues(issues, %State{} = state) when is_list(issues) do
+    terminal_states = terminal_state_set()
+    Enum.count(issues, &pending_comment_reply_issue?(&1, state, terminal_states))
   end
 
   defp should_dispatch_comment_reply_issue?(
@@ -1620,7 +1936,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp comment_reply_state_set do
-    Config.settings!().tracker.comment_reply_states
+    comment_reply_monitor_states()
     |> Enum.map(&normalize_issue_state/1)
     |> Enum.filter(&(&1 != ""))
     |> MapSet.new()
@@ -2196,7 +2512,7 @@ defmodule SymphonyElixir.Orchestrator do
       (running_entries ++ retry_entries)
       |> Enum.flat_map(&resource_lock_paths_from_entry/1)
 
-    [frappe_cloud_deploy_lock_path() | marker_lock_paths]
+    marker_lock_paths
   end
 
   defp resource_lock_paths_from_entry(entry) when is_map(entry) do
@@ -2242,11 +2558,6 @@ defmodule SymphonyElixir.Orchestrator do
     else
       _ -> []
     end
-  end
-
-  defp frappe_cloud_deploy_lock_path do
-    System.get_env("FRAPPE_CLOUD_DEPLOY_LOCK_DIR") ||
-      Path.join([System.user_home!(), ".cache", "symphony", "frappe-cloud-deploy.use.lock"])
   end
 
   defp cleanup_orphaned_resource_lock(lock_path) when is_binary(lock_path) do
@@ -2847,31 +3158,117 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp agent_role_snapshot_entries(%State{} = state, now_ms) do
-    Config.settings!().agent.roles
-    |> Enum.map(fn {role_name, role_config} ->
-      status = Map.get(state.agent_role_status, role_name, %{})
-      enabled? = agent_role_enabled?(role_config)
-      due_at_ms = Map.get(state.agent_role_due_at_ms, role_name, now_ms)
+    configured_roles =
+      Config.settings!().agent.roles
+      |> Enum.map(fn {role_name, role_config} ->
+        status = Map.get(state.agent_role_status, role_name, %{})
+        enabled? = agent_role_enabled?(role_config)
+        due_at_ms = Map.get(state.agent_role_due_at_ms, role_name, now_ms)
 
-      %{
-        name: role_name,
-        enabled: enabled?,
-        status: agent_role_snapshot_status(enabled?, status),
-        run: agent_role_phase(role_config),
-        cwd: Map.get(status, :cwd) || agent_role_cwd(role_config),
-        command: Map.get(role_config, "command"),
-        interval_ms: agent_role_interval_ms(role_config),
-        timeout_ms: agent_role_timeout_ms(role_config),
-        next_due_in_ms: agent_role_next_due_in_ms(enabled?, due_at_ms, now_ms),
-        last_started_at: Map.get(status, :last_started_at),
-        last_finished_at: Map.get(status, :last_finished_at),
-        last_duration_ms: Map.get(status, :last_duration_ms),
-        last_exit_status: Map.get(status, :last_exit_status),
-        last_output: Map.get(status, :last_output),
-        last_error: Map.get(status, :last_error)
-      }
-    end)
+        %{
+          name: role_name,
+          enabled: enabled?,
+          status: agent_role_snapshot_status(enabled?, status),
+          run: agent_role_phase(role_config),
+          cwd: Map.get(status, :cwd) || agent_role_cwd(role_config),
+          command: Map.get(role_config, "command"),
+          interval_ms: agent_role_interval_ms(role_config),
+          timeout_ms: agent_role_timeout_ms(role_config),
+          next_due_in_ms: agent_role_next_due_in_ms(enabled?, due_at_ms, now_ms),
+          last_started_at: Map.get(status, :last_started_at),
+          last_finished_at: Map.get(status, :last_finished_at),
+          last_duration_ms: Map.get(status, :last_duration_ms),
+          last_exit_status: Map.get(status, :last_exit_status),
+          last_output: Map.get(status, :last_output),
+          last_error: Map.get(status, :last_error),
+          metadata: %{}
+        }
+      end)
+
+    [
+      waiting_blocker_monitor_snapshot_entry(state, now_ms),
+      comment_reply_monitor_snapshot_entry(state, now_ms)
+      | configured_roles
+    ]
   end
+
+  defp waiting_blocker_monitor_snapshot_entry(%State{} = state, now_ms) do
+    waiting_state = configured_waiting_state()
+    status = state.waiting_blocker_monitor_status || %{}
+    enabled? = is_binary(waiting_state)
+
+    %{
+      name: @waiting_blocker_role_name,
+      enabled: enabled?,
+      status: waiting_blocker_monitor_snapshot_status(enabled?, status),
+      run: "poll",
+      cwd: "builtin",
+      command: "builtin:waiting-blocker-monitor",
+      interval_ms: state.poll_interval_ms,
+      timeout_ms: nil,
+      next_due_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
+      last_started_at: Map.get(status, :last_started_at),
+      last_finished_at: Map.get(status, :last_finished_at),
+      last_duration_ms: Map.get(status, :last_duration_ms),
+      last_exit_status: nil,
+      last_output: Map.get(status, :last_output) || waiting_blocker_monitor_idle_output(enabled?, waiting_state),
+      last_error: Map.get(status, :last_error),
+      metadata: %{
+        waiting_state: Map.get(status, :waiting_state, waiting_state),
+        scanned_count: Map.get(status, :scanned_count, 0),
+        blocked_waiting_count: Map.get(status, :blocked_waiting_count, 0),
+        blocker_ref_count: Map.get(status, :blocker_ref_count, 0),
+        blocker_candidate_count: Map.get(status, :blocker_candidate_count, 0),
+        recovered_count: Map.get(status, :recovered_count, 0),
+        dispatched_count: Map.get(status, :dispatched_count, 0),
+        latest_issue_identifiers: Map.get(status, :latest_issue_identifiers, [])
+      }
+    }
+  end
+
+  defp comment_reply_monitor_snapshot_entry(%State{} = state, now_ms) do
+    states = comment_reply_monitor_states()
+    status = state.comment_reply_monitor_status || %{}
+    enabled? = states != []
+
+    %{
+      name: @comment_reply_monitor_role_name,
+      enabled: enabled?,
+      status: comment_reply_monitor_snapshot_status(enabled?, status),
+      run: "poll",
+      cwd: "builtin",
+      command: "builtin:linear-comment-monitor",
+      interval_ms: state.poll_interval_ms,
+      timeout_ms: nil,
+      next_due_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
+      last_started_at: Map.get(status, :last_started_at),
+      last_finished_at: Map.get(status, :last_finished_at),
+      last_duration_ms: Map.get(status, :last_duration_ms),
+      last_exit_status: nil,
+      last_output: Map.get(status, :last_output) || comment_reply_monitor_idle_output(enabled?, states),
+      last_error: Map.get(status, :last_error),
+      metadata: %{
+        states: Map.get(status, :states, states),
+        scanned_count: Map.get(status, :scanned_count, 0),
+        actionable_count: Map.get(status, :actionable_count, 0),
+        pending_count: Map.get(status, :pending_count, 0),
+        dispatched_count: Map.get(status, :dispatched_count, 0),
+        latest_issue_identifiers: Map.get(status, :latest_issue_identifiers, [])
+      }
+    }
+  end
+
+  defp waiting_blocker_monitor_snapshot_status(false, _status), do: "disabled"
+  defp waiting_blocker_monitor_snapshot_status(true, status), do: Map.get(status, :status, "idle")
+
+  defp waiting_blocker_monitor_idle_output(false, _waiting_state), do: "disabled: no waiting_state configured"
+  defp waiting_blocker_monitor_idle_output(true, waiting_state), do: "monitoring #{waiting_state}"
+
+  defp comment_reply_monitor_snapshot_status(false, _status), do: "disabled"
+  defp comment_reply_monitor_snapshot_status(true, status), do: Map.get(status, :status, "idle")
+
+  defp comment_reply_monitor_idle_output(false, _states), do: "disabled: no comment_reply_states configured"
+  defp comment_reply_monitor_idle_output(true, states), do: "monitoring #{length(states)} states"
 
   defp agent_role_snapshot_status(false, _status), do: "disabled"
   defp agent_role_snapshot_status(true, status), do: Map.get(status, :status, "idle")
@@ -3085,7 +3482,6 @@ defmodule SymphonyElixir.Orchestrator do
           %{path: checkpoint_path}
         else
           {:error, reason} -> %{path: checkpoint_path, error: inspect(reason)}
-          reason -> %{path: checkpoint_path, error: inspect(reason)}
         end
     end
   end
@@ -3094,7 +3490,7 @@ defmodule SymphonyElixir.Orchestrator do
     do: workspace_path
 
   defp resume_workspace_path(%{identifier: identifier}) when is_binary(identifier) do
-    Path.join(Config.settings!().workspace.root, safe_workspace_identifier(identifier))
+    Path.join(Config.settings!().workspace.root, issue_workspace_relative_path(identifier))
   end
 
   defp resume_workspace_path(_running_entry), do: nil

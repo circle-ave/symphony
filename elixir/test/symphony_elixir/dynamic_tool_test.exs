@@ -182,7 +182,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
             "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
           },
           workspace: workspace,
-          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
           linear_client: review_state_guard_client(test_pid, "In Review")
         )
 
@@ -203,17 +203,16 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     with_guarded_workspace(fn workspace ->
       write_review_ready_proof!(workspace, %{
         "schema" => "symphony.review-ready.v1",
-        "issue" => "CIR-1",
+        "issue" => "MT-1",
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
         "functionalReviewRecipePassed" => true,
-        "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
-        "cloudContainsMergedPr" => true,
+        "targetContainsMergedPr" => true,
         "reviewBranch" => "main",
-        "liveValidationPassed" => true,
+        "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true,
         "acceptanceAgentReview" => acceptance_agent_review()
@@ -231,7 +230,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
             "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
           },
           workspace: workspace,
-          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
           git_head: "head-123",
           linear_client: review_state_guard_client(test_pid, "In Review")
         )
@@ -249,17 +248,16 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     with_guarded_workspace(fn workspace ->
       write_review_ready_proof!(workspace, %{
         "schema" => "symphony.review-ready.v1",
-        "issue" => "CIR-1",
+        "issue" => "MT-1",
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
         "functionalReviewRecipePassed" => true,
-        "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
-        "cloudContainsMergedPr" => true,
+        "targetContainsMergedPr" => true,
         "reviewBranch" => "main",
-        "liveValidationPassed" => true,
+        "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true
       })
@@ -276,7 +274,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
             "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
           },
           workspace: workspace,
-          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
           git_head: "head-123",
           linear_client: review_state_guard_client(test_pid, "In Review")
         )
@@ -295,27 +293,25 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     end)
   end
 
-  test "linear_graphql treats live Desk routes as user-facing even when proof says false" do
+  test "linear_graphql allows non-user-facing readiness proof without independent acceptance proof" do
     test_pid = self()
 
     with_guarded_workspace(fn workspace ->
       write_review_ready_proof!(workspace, %{
         "schema" => "symphony.review-ready.v1",
-        "issue" => "CIR-1",
+        "issue" => "MT-1",
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
         "functionalReviewRecipePassed" => true,
-        "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
-        "cloudContainsMergedPr" => true,
+        "targetContainsMergedPr" => true,
         "reviewBranch" => "main",
-        "liveValidationPassed" => true,
+        "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true,
-        "userFacing" => false,
-        "openUrl" => "https://law-ep.erpnext.com/app/project/CIR-1"
+        "userFacing" => false
       })
 
       response =
@@ -330,18 +326,14 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
             "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
           },
           workspace: workspace,
-          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
           git_head: "head-123",
           linear_client: review_state_guard_client(test_pid, "In Review")
         )
 
-      assert response["success"] == false
-      payload = Jason.decode!(response["output"])
-
-      assert payload["error"]["message"] ==
-               "Blocked review transition: missing independent acceptance agent proof."
-
-      refute_received {:linear_client_called, :state_update, _variables}
+      assert response["success"] == true
+      assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
+      assert_received {:linear_client_called, :state_update, %{"id" => "issue-1", "stateId" => "state-review"}}
     end)
   end
 
@@ -351,17 +343,16 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     with_guarded_workspace(fn workspace ->
       write_review_ready_proof!(workspace, %{
         "schema" => "symphony.review-ready.v1",
-        "issue" => "CIR-1",
+        "issue" => "MT-1",
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
         "functionalReviewRecipePassed" => true,
-        "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
-        "cloudContainsMergedPr" => true,
+        "targetContainsMergedPr" => true,
         "reviewBranch" => "main",
-        "liveValidationPassed" => true,
+        "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true
       })
@@ -380,7 +371,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
             "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
           },
           workspace: workspace,
-          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
           git_head: "head-123",
           linear_client: review_state_guard_client(test_pid, "In Review")
         )
@@ -397,17 +388,16 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     with_guarded_workspace(fn workspace ->
       write_review_ready_proof!(workspace, %{
         "schema" => "symphony.review-ready.v1",
-        "issue" => "CIR-1",
+        "issue" => "MT-1",
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
         "functionalReviewRecipePassed" => true,
-        "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
-        "cloudContainsMergedPr" => true,
+        "targetContainsMergedPr" => true,
         "reviewBranch" => "main",
-        "liveValidationPassed" => true,
+        "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true,
         "acceptanceAgentReview" => Map.delete(acceptance_agent_review(), "claims")
@@ -425,7 +415,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
             "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
           },
           workspace: workspace,
-          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
           git_head: "head-123",
           linear_client: review_state_guard_client(test_pid, "In Review")
         )
@@ -447,17 +437,16 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     with_guarded_workspace(fn workspace ->
       write_review_ready_proof!(workspace, %{
         "schema" => "symphony.review-ready.v1",
-        "issue" => "CIR-1",
+        "issue" => "MT-1",
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
         "functionalReviewRecipePassed" => true,
-        "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
-        "cloudContainsMergedPr" => true,
-        "reviewBranch" => "dillon/cir-1-feature",
-        "liveValidationPassed" => true,
+        "targetContainsMergedPr" => true,
+        "reviewBranch" => "dillon/mt-1-feature",
+        "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true
       })
@@ -474,7 +463,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
             "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
           },
           workspace: workspace,
-          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
           git_head: "head-123",
           linear_client: review_state_guard_client(test_pid, "In Review")
         )
@@ -495,15 +484,14 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     with_guarded_workspace(fn workspace ->
       write_review_ready_proof!(workspace, %{
         "schema" => "symphony.review-ready.v1",
-        "issue" => "CIR-1",
+        "issue" => "MT-1",
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
-        "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
-        "cloudContainsMergedPr" => true,
+        "targetContainsMergedPr" => true,
         "reviewBranch" => "main",
-        "liveValidationPassed" => true,
+        "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true
       })
@@ -520,7 +508,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
             "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
           },
           workspace: workspace,
-          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
           git_head: "head-123",
           linear_client: review_state_guard_client(test_pid, "In Review")
         )
@@ -541,16 +529,15 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     with_guarded_workspace(fn workspace ->
       write_review_ready_proof!(workspace, %{
         "schema" => "symphony.review-ready.v1",
-        "issue" => "CIR-1",
+        "issue" => "MT-1",
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
-        "frappeCloudDeployed" => true,
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
-        "cloudContainsMergedPr" => true,
+        "targetContainsMergedPr" => true,
         "reviewBranch" => "main",
-        "liveValidationPassed" => true,
+        "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true
       })
@@ -567,7 +554,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
             "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
           },
           workspace: workspace,
-          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
           git_head: "head-123",
           linear_client: review_state_guard_client(test_pid, "In Review")
         )
@@ -598,7 +585,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
             "variables" => %{"id" => "issue-1", "stateId" => "state-progress"}
           },
           workspace: workspace,
-          issue: %Issue{id: "issue-1", identifier: "CIR-1"},
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
           linear_client: review_state_guard_client(test_pid, "In Progress")
         )
 
@@ -782,7 +769,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   defp acceptance_agent_review do
     %{
       "schema" => "symphony.acceptance-agent-review.v1",
-      "issue" => "CIR-1",
+      "issue" => "MT-1",
       "workspaceHead" => "head-123",
       "verdict" => "pass",
       "testedLiveMain" => true,
@@ -794,7 +781,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       "deterministicValidatorsOnlySupportingEvidence" => true,
       "claims" => [
         %{
-          "claim" => "Debt Collection Calls",
+          "claim" => "Visible workflow claim",
           "status" => "pass",
           "evidence" => "Observed visible in the live browser DOM and screenshot."
         }
@@ -818,7 +805,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "data" => %{
                "issue" => %{
                  "id" => variables["issueId"],
-                 "identifier" => "CIR-1",
+                 "identifier" => "MT-1",
                  "team" => %{
                    "states" => %{
                      "nodes" => [

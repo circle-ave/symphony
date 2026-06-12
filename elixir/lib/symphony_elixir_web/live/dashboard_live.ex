@@ -5,8 +5,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixir.Orchestrator
   alias SymphonyElixir.Codex.Controls
+  alias SymphonyElixir.Orchestrator
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
@@ -129,10 +129,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <aside class="dashboard-sidebar" aria-label="Dashboard navigation">
         <div class="sidebar-brand">
           <span class="brand-mark">S</span>
-          <div>
-            <p class="eyebrow">Symphony</p>
-            <strong>Ops Dash</strong>
-          </div>
+          <strong>Symphony</strong>
         </div>
 
         <nav class="sidebar-nav" aria-label="Dashboard sections">
@@ -158,26 +155,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </a>
         </nav>
 
-        <div class="sidebar-panel">
-          <span class="metric-label">Runtime</span>
-          <strong class="numeric"><%= sidebar_runtime(@payload, @now) %></strong>
-          <small><%= sidebar_host(@payload) %></small>
-        </div>
       </aside>
 
       <div class="dashboard-main">
         <header class="topbar hero-card">
           <div class="hero-grid">
             <div>
-              <p class="eyebrow">
-                Symphony Observability
-              </p>
               <h1 class="hero-title">
-                Operations Dashboard
+                Ops Dashboard
               </h1>
-              <p class="hero-copy">
-                Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
-              </p>
             </div>
 
             <div class="status-stack">
@@ -210,10 +196,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <main class="dashboard-content">
           <section class="section-card controls-card" id="controls">
             <div class="section-header">
-              <div>
-                <h2 class="section-title">Agent controls</h2>
-                <p class="section-copy">Model and reasoning effort for new Codex agent sessions.</p>
-              </div>
+              <h2 class="section-title">Controls</h2>
               <%= if @control_notice do %>
                 <span class="control-status control-status-ok"><%= @control_notice %></span>
               <% end %>
@@ -222,42 +205,37 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <%= if control_error?(@controls) do %>
               <p class="empty-state"><%= @controls.error.message %></p>
             <% else %>
-              <form class="control-form" phx-submit="update-controls">
-                <label class="control-field">
-                  <span>Model</span>
-                  <input
-                    type="text"
-                    name="controls[model]"
-                    value={@controls.model || ""}
-                    placeholder="default"
-                  />
-                </label>
+              <%= if @controls.repository_options != [] do %>
+                <form class="control-form" phx-submit="update-controls">
+                  <label class="control-field">
+                    <span>Repository</span>
+                    <select
+                      id={"agent-repository-#{@controls.selected_repository_id || "default"}"}
+                      name="controls[repository_id]"
+                    >
+                      <%= Phoenix.HTML.Form.options_for_select(
+                        repository_options(@controls),
+                        @controls.selected_repository_id || ""
+                      ) %>
+                    </select>
+                  </label>
 
-                <label class="control-field">
-                  <span>Reasoning effort</span>
-                  <select
-                    id={"agent-reasoning-effort-#{@controls.reasoning_effort || "default"}"}
-                    name="controls[reasoning_effort]"
-                  >
-                    <%= Phoenix.HTML.Form.options_for_select(
-                      reasoning_effort_options(@controls),
-                      @controls.reasoning_effort || ""
-                    ) %>
-                  </select>
-                </label>
-
-                <button type="submit">Apply</button>
-              </form>
+                  <button type="submit">Apply</button>
+                </form>
+              <% end %>
 
               <%= if @control_error do %>
                 <p class="control-status control-status-error"><%= @control_error %></p>
               <% end %>
 
-              <pre class="code-panel command-panel"><%= @controls.command %></pre>
+              <details class="command-details">
+                <summary>Command</summary>
+                <pre class="code-panel command-panel"><%= @controls.command %></pre>
+              </details>
 
               <div class="restart-controls">
                 <div>
-                  <span class="metric-label">Restart state</span>
+                  <span class="metric-label">State</span>
                   <strong><%= if frozen?(@payload), do: "Frozen", else: "Dispatching" %></strong>
                   <%= if frozen?(@payload) && @payload.freeze[:reason] do %>
                     <small><%= @payload.freeze.reason %></small>
@@ -290,11 +268,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="ops-summary-grid" id="overview">
           <article class="section-card chart-card">
             <div class="mini-header">
-              <div>
-                <h2 class="section-title">Workload</h2>
-                <p class="section-copy">Active, retrying, and blocked issues.</p>
-              </div>
-              <span class="metric-pill numeric"><%= total_active(@payload) %> total</span>
+              <h2 class="section-title">Workload</h2>
+              <span class="metric-pill numeric"><%= total_active(@payload) %></span>
             </div>
 
             <div class="workload-chart">
@@ -311,11 +286,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
           <article class="section-card chart-card">
             <div class="mini-header">
-              <div>
-                <h2 class="section-title">Capacity</h2>
-                <p class="section-copy"><%= @payload.system.host %> · <%= @payload.system.os %></p>
-              </div>
-              <span class="metric-pill numeric"><%= @payload.environment.available_agent_slots %> slots open</span>
+              <h2 class="section-title">Capacity</h2>
+              <span class="metric-pill numeric"><%= @payload.environment.available_agent_slots %> open</span>
             </div>
 
             <div class="bar-stack">
@@ -330,19 +302,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <div class="meter meter-warning"><span style={bar_style(disk_used_percent(@payload.system.disk))}></span></div>
               </div>
               <div class="bar-row">
-                <span>Bench warmed</span>
-                <strong><%= format_local_bench_compact(@payload.environment.local_bench) %></strong>
-                <div class="meter"><span style={bar_style(local_bench_percent(@payload.environment.local_bench))}></span></div>
+                <span>Repository</span>
+                <strong><%= format_repository_compact(@payload.environment.selected_repository) %></strong>
+                <div class="meter"><span style={bar_style(repository_percent(@payload.environment.selected_repository))}></span></div>
               </div>
             </div>
           </article>
 
           <article class="section-card chart-card">
             <div class="mini-header">
-              <div>
-                <h2 class="section-title">Throughput</h2>
-                <p class="section-copy">Runtime, tokens, and upstream pressure.</p>
-              </div>
+              <h2 class="section-title">Throughput</h2>
               <span class="metric-pill numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></span>
             </div>
 
@@ -363,10 +332,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
          <section class="section-card role-section" id="operator-roles">
            <div class="mini-header">
-             <div>
-               <h2 class="section-title">Operator roles</h2>
-               <p class="section-copy">Scheduled non-ticket roles, last result, and next due time.</p>
-             </div>
+             <h2 class="section-title">Roles</h2>
              <span class="metric-pill numeric"><%= length(agent_roles(@payload)) %></span>
            </div>
 
@@ -401,7 +367,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                  </div>
 
                  <p class="activity-summary"><%= role_detail(role) %></p>
-                 <p class="role-path mono"><%= role.cwd %></p>
+                 <p class="role-path mono"><%= role_scope(role) %></p>
                </article>
              </div>
            <% end %>
@@ -409,10 +375,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
          <section class="section-card agent-section" id="agents">
           <div class="mini-header">
-            <div>
-              <h2 class="section-title">Agents</h2>
-              <p class="section-copy">Current activity, stream tail, runtime, and token load.</p>
-            </div>
+            <h2 class="section-title">Agents</h2>
             <span class="metric-pill numeric"><%= @payload.counts.running %>/<%= @payload.environment.max_concurrent_agents %></span>
           </div>
 
@@ -455,7 +418,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
                 <%= if entry.stream_window != [] do %>
                   <div class="stream-window">
-                    <span class="stream-window-label">Recent stream</span>
+                    <span class="stream-window-label">Stream</span>
                     <ol>
                       <li :for={item <- entry.stream_window}>
                         <span class="stream-message"><%= item.message %></span>
@@ -468,7 +431,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <% end %>
 
                 <div class="agent-actions">
-                  <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                  <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON</a>
                   <button
                     type="button"
                     class={[
@@ -479,7 +442,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     phx-click="inspect-session"
                     phx-value-issue={entry.issue_identifier}
                   >
-                    Inspect thread
+                    Inspect
                   </button>
                   <%= if entry.session_id do %>
                     <button
@@ -585,15 +548,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="queue-grid" id="queue">
           <article class="section-card queue-card">
             <div class="mini-header">
-              <div>
-                <h2 class="section-title">Retry queue</h2>
-                <p class="section-copy">Backoff, slot pressure, and resource-gate waits.</p>
-              </div>
+              <h2 class="section-title">Retry</h2>
               <span class="metric-pill numeric"><%= @payload.counts.retrying %></span>
             </div>
 
             <%= if @payload.retrying == [] do %>
-              <p class="empty-state">No issues are currently backing off.</p>
+              <p class="empty-state">None.</p>
             <% else %>
               <div class="queue-list">
                 <div :for={entry <- @payload.retrying} class="queue-row">
@@ -614,15 +574,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
           <article class="section-card queue-card">
             <div class="mini-header">
-              <div>
-                <h2 class="section-title">Blocked</h2>
-                <p class="section-copy">Operator input, approvals, and hard blockers.</p>
-              </div>
+              <h2 class="section-title">Blocked</h2>
               <span class="metric-pill numeric"><%= @payload.counts.blocked %></span>
             </div>
 
             <%= if @payload.blocked == [] do %>
-              <p class="empty-state">No blocked sessions.</p>
+              <p class="empty-state">None.</p>
             <% else %>
               <div class="queue-list">
                 <div :for={entry <- @payload.blocked} class="queue-row">
@@ -753,15 +710,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp payload_count(%{counts: counts}, key) when is_map(counts), do: Map.get(counts, key, 0) || 0
   defp payload_count(_payload, _key), do: 0
 
-  defp sidebar_runtime(%{codex_totals: _totals, running: running} = payload, now) when is_list(running) do
-    format_runtime_seconds(total_runtime_seconds(payload, now))
-  end
-
-  defp sidebar_runtime(_payload, _now), do: "n/a"
-
-  defp sidebar_host(%{system: %{host: host}}) when is_binary(host), do: host
-  defp sidebar_host(_payload), do: "snapshot offline"
-
   defp frozen?(%{freeze: %{active: true}}), do: true
   defp frozen?(_payload), do: false
 
@@ -781,6 +729,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp role_detail(role) do
     role.last_error || role.last_output || role.command || "No result yet."
   end
+
+  defp role_scope(%{metadata: %{states: states}}) when is_list(states) and states != [] do
+    "states: " <> Enum.join(states, ", ")
+  end
+
+  defp role_scope(%{cwd: cwd}) when is_binary(cwd), do: cwd
+  defp role_scope(_role), do: "n/a"
 
   defp format_millis(nil), do: "n/a"
 
@@ -825,8 +780,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp disk_used_percent(%{used_bytes: used, total_bytes: total}), do: percent(used, total)
   defp disk_used_percent(_disk), do: 0
 
-  defp local_bench_percent(%{warmed_slots: warmed, pool_size: pool_size}), do: percent(warmed, pool_size)
-  defp local_bench_percent(_local_bench), do: 0
+  defp repository_percent(nil), do: 0
+  defp repository_percent(_repository), do: 100
 
   defp token_percent(value, %{total_tokens: total}), do: percent(value, total)
   defp token_percent(_value, _totals), do: 0
@@ -886,14 +841,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp format_disk_compact(nil), do: "n/a"
   defp format_disk_compact(disk), do: "#{disk.capacity} used · #{format_bytes(disk.available_bytes)} free"
 
-  defp format_local_bench_compact(nil), do: "n/a"
-
-  defp format_local_bench_compact(%{pool_size: pool_size, warmed_slots: warmed_slots})
-       when is_integer(pool_size) do
-    "#{warmed_slots}/#{pool_size}"
-  end
-
-  defp format_local_bench_compact(_local_bench), do: "configured"
+  defp format_repository_compact(nil), do: "not selected"
+  defp format_repository_compact(%{name: name}) when is_binary(name), do: name
+  defp format_repository_compact(%{id: id}) when is_binary(id), do: id
+  defp format_repository_compact(_repository), do: "selected"
 
   defp activity_badge_class(tone) do
     base = "activity-badge"
@@ -954,14 +905,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp effort_label("low"), do: "Low / fastest"
-  defp effort_label("medium"), do: "Medium"
-  defp effort_label("high"), do: "High"
-  defp effort_label("xhigh"), do: "XHigh / deepest"
-  defp effort_label(effort), do: effort
+  defp repository_options(controls) do
+    Enum.map(controls.repository_options, fn repo ->
+      label =
+        case repo do
+          %{name: name, id: id} when is_binary(name) and name != "" -> "#{name} (#{id})"
+          %{id: id} -> id
+        end
 
-  defp reasoning_effort_options(controls) do
-    [{"Default", ""} | Enum.map(controls.reasoning_effort_options, &{effort_label(&1), &1})]
+      {label, repo.id}
+    end)
   end
 
   defp schedule_runtime_tick do

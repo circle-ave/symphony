@@ -40,6 +40,55 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace clones the selected repository under a repository namespace" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-selected-repo-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source repo")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "selected repo\n")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_project_slug: nil,
+        workspace_root: workspace_root,
+        repositories_selected: "repo-one",
+        repositories_allowed: [
+          %{
+            id: "repo-one",
+            name: "Repo One",
+            url: template_repo,
+            branch: "main",
+            setup: "echo selected > setup.log",
+            tracker: %{project_slug: "repo-one-project"}
+          }
+        ]
+      )
+
+      assert Config.settings!().tracker.project_slug == "repo-one-project"
+      assert {:ok, workspace} = Workspace.create_for_issue("S-1")
+
+      assert {:ok, expected_workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join([workspace_root, "repo-one", "S-1"]))
+
+      assert workspace == expected_workspace
+      assert File.read!(Path.join(workspace, "README.md")) == "selected repo\n"
+      assert File.read!(Path.join(workspace, "setup.log")) == "selected\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(
@@ -441,7 +490,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
   end
 
-  test "linear client normalizes latest actionable comment" do
+  test "linear client treats newer comment reply marker as handled" do
     issue =
       Client.normalize_issue_for_test(%{
         "id" => "issue-comment",
@@ -481,11 +530,46 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         }
       })
 
+    assert issue.latest_comment_id == nil
+    assert issue.latest_comment_body == nil
+    assert issue.latest_comment_user_id == nil
+    assert issue.latest_comment_user_name == nil
+    assert issue.latest_comment_created_at == nil
+  end
+
+  test "linear client normalizes human comment newer than comment reply marker" do
+    issue =
+      Client.normalize_issue_for_test(%{
+        "id" => "issue-comment",
+        "identifier" => "MT-556",
+        "title" => "Comment test",
+        "description" => "Description",
+        "state" => %{"name" => "In Review"},
+        "labels" => %{"nodes" => []},
+        "inverseRelations" => %{"nodes" => []},
+        "comments" => %{
+          "nodes" => [
+            %{
+              "id" => "comment-reply",
+              "body" => "Handled.\n\n<!-- symphony-comment-reply -->",
+              "createdAt" => "2026-05-06T12:01:00Z",
+              "user" => %{"id" => "user-1", "displayName" => "dillon"}
+            },
+            %{
+              "id" => "comment-human",
+              "body" => "Can you check this before merge?",
+              "createdAt" => "2026-05-06T12:02:00Z",
+              "user" => %{"id" => "user-2", "displayName" => "reviewer"}
+            }
+          ]
+        }
+      })
+
     assert issue.latest_comment_id == "comment-human"
     assert issue.latest_comment_body == "Can you check this before merge?"
     assert issue.latest_comment_user_id == "user-2"
     assert issue.latest_comment_user_name == "reviewer"
-    assert issue.latest_comment_created_at == ~U[2026-05-06 11:59:00Z]
+    assert issue.latest_comment_created_at == ~U[2026-05-06 12:02:00Z]
   end
 
   test "linear client logs response bodies for non-200 graphql responses" do
@@ -1106,6 +1190,17 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server")
     assert Config.settings!().codex.command == "codex app-server"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      repositories_selected: "missing-url",
+      repositories_allowed: [
+        %{id: "missing-url", name: "Missing URL", tracker: %{project_slug: "project"}}
+      ]
+    )
+
+    assert Config.settings!().repositories.allowed |> List.first() |> Map.get(:url) == nil
+    assert {:error, {:invalid_repository, "missing-url", :missing_url}} = Config.validate!()
   end
 
   test "config resolves $VAR references for env-backed secret and path values" do

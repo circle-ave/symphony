@@ -301,7 +301,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       {:error, _reason} ->
         review_transition_error("Blocked review transition: missing review readiness proof.", %{
           "path" => marker_path,
-          "requiredCommand" => "Run scripts/review_readiness_check.mjs after Frappe Cloud deploy/live validation; it writes this file on pass."
+          "requiredCommand" => "Run the configured review readiness check; it must write this file on pass."
         })
     end
   end
@@ -349,11 +349,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     [
       "reviewReadinessCheckPassed",
       "workpadCompleted",
-      "frappeCloudDeployed",
       "mainBranchReviewed",
       "pullRequestMerged",
-      "cloudContainsMergedPr",
-      "liveValidationPassed",
+      "targetContainsMergedPr",
+      "validationPassed",
       "deliverableReviewPassed"
     ]
   end
@@ -606,7 +605,20 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp issue_identifier(_issue), do: nil
 
   defp proof_value(proof, key) do
-    map_value(proof, key) || map_value(proof, Macro.underscore(key))
+    case fetch_map_value(proof, key) do
+      {:ok, value} -> value
+      :error -> map_value(proof, Macro.underscore(key))
+    end
+  end
+
+  defp fetch_map_value(map, key) when is_map(map) and is_binary(key) do
+    atom_key = String.to_atom(key)
+
+    cond do
+      Map.has_key?(map, key) -> {:ok, Map.get(map, key)}
+      Map.has_key?(map, atom_key) -> {:ok, Map.get(map, atom_key)}
+      true -> :error
+    end
   end
 
   defp proof_review_branch(proof) do
@@ -614,24 +626,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp proof_user_facing?(proof) do
-    proof_value(proof, "userFacing") != false or proof_references_live_desk_route?(proof)
+    proof_value(proof, "userFacing") != false
   end
-
-  defp proof_references_live_desk_route?(proof) do
-    [
-      proof_value(proof, "openUrl"),
-      proof_value(proof, "screenshotEvidenceUrl"),
-      nested_value(proof, ["acceptanceAgentReview", "evidence", "liveRoute"]),
-      nested_value(proof, ["acceptanceAgentReview", "evidence", "screenshot"]),
-      nested_value(proof, ["liveSmoke", "command"])
-    ]
-    |> Enum.any?(&live_desk_route?/1)
-  end
-
-  defp live_desk_route?(value) when is_binary(value),
-    do: String.contains?(value, "law-ep.erpnext.com/app")
-
-  defp live_desk_route?(_value), do: false
 
   defp workspace_head(workspace, opts) do
     case Keyword.fetch(opts, :git_head) do

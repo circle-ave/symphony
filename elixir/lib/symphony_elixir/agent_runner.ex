@@ -217,6 +217,7 @@ defmodule SymphonyElixir.AgentRunner do
     - A new actionable Linear comment was left on this issue while it is in `#{issue.state}`.
     - Reply directly to the latest comment. Do not start unrelated implementation work.
     - If the comment requests code changes, move the issue to `Rework` before changing files, then follow the normal workflow.
+    - If the latest comment contains a Linear image URL, inspect it before replying. Fetch `uploads.linear.app` assets with the raw Linear token header: `Authorization: $LINEAR_API_KEY`.
     - Include this hidden marker at the end of any Linear reply you post so Symphony does not treat its own reply as a new request:
       #{marker}
 

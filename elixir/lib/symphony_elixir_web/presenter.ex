@@ -207,7 +207,8 @@ defmodule SymphonyElixirWeb.Presenter do
       last_duration_ms: Map.get(entry, :last_duration_ms),
       last_exit_status: Map.get(entry, :last_exit_status),
       last_output: Map.get(entry, :last_output),
-      last_error: Map.get(entry, :last_error)
+      last_error: Map.get(entry, :last_error),
+      metadata: Map.get(entry, :metadata, %{})
     }
   end
 
@@ -259,8 +260,6 @@ defmodule SymphonyElixirWeb.Presenter do
   defp serialize_orchestrator_action_payload(payload) when is_map(payload) do
     Map.new(payload, fn {key, value} -> {key, serialize_orchestrator_value(value)} end)
   end
-
-  defp serialize_orchestrator_action_payload(payload), do: payload
 
   defp serialize_orchestrator_value(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp serialize_orchestrator_value(%NaiveDateTime{} = datetime), do: NaiveDateTime.to_iso8601(datetime)
@@ -365,6 +364,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp environment_payload(config, snapshot) do
     workspace_paths = workspace_paths(snapshot)
+    repositories = Config.repository_options(config)
 
     %{
       workspace_root: Path.expand(config.workspace.root),
@@ -375,7 +375,8 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_host_count: length(config.worker.ssh_hosts),
       polling_interval_ms: config.polling.interval_ms,
       active_workspace_count: length(workspace_paths),
-      local_bench: local_bench_payload(workspace_paths)
+      selected_repository: Enum.find(repositories, & &1.selected),
+      repository_count: length(repositories)
     }
   end
 
@@ -437,102 +438,6 @@ defmodule SymphonyElixirWeb.Presenter do
         expanded |> Path.dirname() |> existing_path()
     end
   end
-
-  defp local_bench_payload(workspace_paths) do
-    case local_bench_env(workspace_paths) do
-      nil ->
-        nil
-
-      %{path: env_path, values: values} ->
-        pool_size = parse_positive_int(Map.get(values, "FRAPPE_LOCAL_BENCH_POOL_SIZE"))
-        base_dir = local_bench_base_dir(values)
-        slots = local_bench_slots(base_dir, pool_size)
-
-        %{
-          env_path: env_path,
-          mode: Map.get(values, "FRAPPE_LOCAL_BENCH_MODE"),
-          pool_size: pool_size,
-          warmed_slots: Enum.count(slots, & &1.exists),
-          active_locks: Enum.count(slots, & &1.locked),
-          base_dir: base_dir,
-          setup_command: Map.get(values, "FRAPPE_LOCAL_SETUP_COMMAND"),
-          slots: slots
-        }
-    end
-  end
-
-  defp local_bench_env(workspace_paths) do
-    workspace_paths
-    |> Enum.map(&Path.join([&1, ".symphony", "local-frappe-bench.env"]))
-    |> Enum.find(&File.regular?/1)
-    |> case do
-      nil ->
-        nil
-
-      path ->
-        {:ok, contents} = File.read(path)
-        %{path: path, values: parse_env(contents)}
-    end
-  rescue
-    _ -> nil
-  end
-
-  defp parse_env(contents) when is_binary(contents) do
-    contents
-    |> String.split("\n")
-    |> Enum.reduce(%{}, fn line, acc ->
-      case Regex.run(~r/^\s*([A-Z0-9_]+)=(.*)\s*$/, line) do
-        [_, key, value] -> Map.put(acc, key, trim_env_value(value))
-        _ -> acc
-      end
-    end)
-  end
-
-  defp trim_env_value(value) do
-    value
-    |> String.trim()
-    |> String.trim_leading("\"")
-    |> String.trim_trailing("\"")
-    |> String.trim_leading("'")
-    |> String.trim_trailing("'")
-  end
-
-  defp local_bench_base_dir(values) do
-    Map.get(values, "FRAPPE_LOCAL_BENCH_BASE_DIR") ||
-      Map.get(values, "FRAPPE_LOCAL_BENCH_DIR") ||
-      if String.ends_with?(
-           Map.get(values, "FRAPPE_LOCAL_SETUP_COMMAND", ""),
-           "with_shared_local_frappe_bench.sh"
-         ) do
-        Path.join(System.user_home!(), "code/ccms-shared-frappe-bench")
-      end
-  end
-
-  defp local_bench_slots(base_dir, pool_size) when is_binary(base_dir) and is_integer(pool_size) do
-    Enum.map(1..pool_size, fn slot ->
-      path = if slot == 1, do: base_dir, else: "#{base_dir}-#{slot}"
-      lock_path = "#{path}.use.lock"
-
-      %{
-        slot: slot,
-        path: path,
-        exists: File.dir?(path),
-        locked: File.dir?(lock_path),
-        lock_path: lock_path
-      }
-    end)
-  end
-
-  defp local_bench_slots(_base_dir, _pool_size), do: []
-
-  defp parse_positive_int(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {int, ""} when int > 0 -> int
-      _ -> nil
-    end
-  end
-
-  defp parse_positive_int(_value), do: nil
 
   defp activity_payload(:running, entry, last_message) do
     case Map.get(entry, :resource_status) do
@@ -641,7 +546,7 @@ defmodule SymphonyElixirWeb.Presenter do
     |> Enum.join(" · ")
   end
 
-  defp humanize_gate("cloud_gate"), do: "Frappe Cloud gate"
+  defp humanize_gate("cloud_gate"), do: "cloud gate"
   defp humanize_gate("local_bench_gate"), do: "local bench gate"
   defp humanize_gate(gate) when is_binary(gate), do: String.replace(gate, "_", " ")
   defp humanize_gate(_gate), do: "resource gate"

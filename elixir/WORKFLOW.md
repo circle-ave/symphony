@@ -8,6 +8,7 @@ tracker:
     - In Progress
     - Merging
     - Rework
+  waiting_state: Waiting
   terminal_states:
     - Closed
     - Cancelled
@@ -18,9 +19,17 @@ polling:
   interval_ms: 30000
 workspace:
   root: ~/code/symphony-workspaces
+repositories:
+  selected: symphony
+  allowed:
+    - id: symphony
+      name: Symphony
+      url: https://github.com/openai/symphony
+      branch: main
+      tracker:
+        project_slug: "symphony-0c79b11b75ea"
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/openai/symphony .
     if command -v mise >/dev/null 2>&1; then
       cd elixir && mise trust && mise exec -- mix deps.get
     fi
@@ -39,6 +48,8 @@ codex:
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`
+
+Repository: {{ repository.name }} (`{{ repository.id }}`)
 
 {% if attempt %}
 Continuation context:
@@ -88,6 +99,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - Separate readiness from acceptance. Readiness evidence proves the PR/checks/deploy/artifacts are in place; acceptance evidence is an independent agent-run review of the final user path.
 - For user-facing work, deterministic validators are supporting evidence only. Before review, run an observe-only browser acceptance pass against the final review target without remounting UI, patching app state, calling app internals to force success, or relying on helper scripts that self-heal the page.
 - The independent acceptance pass must extract ticket claims first, test the visible UI and any regression claims like reload/connection churn, capture browser evidence, and record a `pass`, `fail`, or `blocked` verdict in the workpad.
+- For user-facing work, keep `### Demo / Review Recipe` reproducible: include the review URL, visible claims, and any login username/password required to reproduce. If no login is required, say `Login: not required`.
 - When meaningful out-of-scope improvements are discovered during execution,
   file a separate Linear issue instead of expanding scope. The follow-up issue
   must include a clear title, description, and acceptance criteria, be placed in
@@ -234,6 +246,7 @@ Use this only when completion is blocked by missing required tools or missing au
     - Run the full PR feedback sweep protocol.
     - Confirm PR checks are passing (green) after the latest changes.
     - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
+    - Confirm `### Demo / Review Recipe` is current. If reproduction requires auth, it must include both username and password for a reviewer-safe account; otherwise include `Login: not required`.
     - For user-facing work, complete `### Independent Acceptance Review` with an observe-only browser pass on the final review target. The review must list extracted claims, the user path tested, visible UI evidence, console/network/realtime observations, screenshot/DOM evidence, and a final pass/fail/blocked verdict. Do not count deterministic validators or scripts that prepare/remount the UI as this verdict.
     - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
@@ -253,6 +266,7 @@ Use this only when completion is blocked by missing required tools or missing au
    - Extract the current `Demo / Review Recipe` from the active workpad only.
    - Use `SymphonyElixir.ReviewRecipe.prepare/1` and `SymphonyElixir.ReviewRecipe.evaluate/2` when running a structured local check.
    - Open the recipe URL in a real browser session.
+   - If the recipe requires login, authenticate with the provided username/password before evaluating claims; missing credentials are a review failure/blocker.
    - Treat login redirects, 404/not-found pages, wrong routes, and stale fixtures as review failures.
    - Verify the visible claims in the recipe, not just that the page loaded.
    - Check browser console warnings/errors.
@@ -342,6 +356,14 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 - Claims tested: `<ticket-visible claims and regression claims>`
 - Browser path: `<final route/user flow tested without remounting or app-state patching>`
 - Evidence: `<screenshot/DOM/console/network/realtime artifacts and observations>`
+
+### Demo / Review Recipe
+
+- Open: `<final review URL>`
+- Login: `<not required, or required>`
+- Username: `<required only when login is required>`
+- Password: `<required only when login is required>`
+- Verify: `<visible claims to check, each concrete claim in backticks>`
 
 ### Notes
 

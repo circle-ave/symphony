@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Config.Schema
+
   defmodule RetryLinearClient do
     def fetch_candidate_issues do
       send(self(), :retry_fetch_candidate_issues)
@@ -91,6 +93,44 @@ defmodule SymphonyElixir.CoreTest do
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "agent.roles"
+
+    assert Schema.normalize_agent_roles(nil) == %{}
+    assert Schema.normalize_agent_roles(%{"raw" => "echo ok"}) == %{"raw" => "echo ok"}
+
+    write_workflow_file!(Workflow.workflow_file_path(), agent_roles: %{"bad" => "not-a-map"})
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "roles must be maps"
+
+    write_workflow_file!(Workflow.workflow_file_path(), agent_roles: %{"bad" => %{}})
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "role command must be a string"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_roles: %{"bad" => %{"command" => "echo ok", "cwd" => 123}}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "role cwd must be a string"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_roles: %{"bad" => %{"command" => "echo ok", "enabled" => "yes"}}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "role enabled must be a boolean"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_roles: %{"bad" => %{"command" => "echo ok", "run" => "post_dispatch"}}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "role run must be pre_dispatch"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_roles: %{"ok" => %{"command" => "echo ok", "enabled" => true}}
+    )
+
+    assert :ok = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -301,6 +341,30 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "last visible status"
   end
 
+  test "prompt builder ignores invalid resume checkpoints and defaults partial checkpoint fields" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Work {{ issue.identifier }}")
+
+    issue = %Issue{id: "issue-resume-defaults", identifier: "MT-RESUME-DEFAULTS", state: "In Progress"}
+
+    assert PromptBuilder.build_prompt(issue, resume_checkpoint: :invalid) == "Work MT-RESUME-DEFAULTS"
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        resume_checkpoint: %{
+          "issue" => "not-a-map",
+          "session" => %{},
+          "codex" => %{"stream_window" => []}
+        }
+      )
+
+    assert prompt =~ "Symphony resume checkpoint"
+    assert prompt =~ "operator restart at unknown"
+    assert prompt =~ "Checkpoint file: n/a"
+    assert prompt =~ "Issue: unknown / unknown"
+    assert prompt =~ "Previous session: unknown; turns completed: 0"
+    refute prompt =~ "Recent stream before freeze"
+  end
+
   test "current WORKFLOW.md file is valid and complete" do
     original_workflow_path = Workflow.workflow_file_path()
     on_exit(fn -> Workflow.set_workflow_file_path(original_workflow_path) end)
@@ -312,13 +376,20 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
+    refute Map.has_key?(tracker, "project_slug")
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
+    repositories = Map.get(config, "repositories", %{})
+    assert Map.get(repositories, "selected") == "symphony"
+
+    assert [%{"id" => "symphony", "url" => "https://github.com/openai/symphony", "tracker" => repo_tracker}] =
+             Map.get(repositories, "allowed")
+
+    assert repo_tracker["project_slug"] == "symphony-0c79b11b75ea"
+
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
     assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
@@ -686,6 +757,65 @@ defmodule SymphonyElixir.CoreTest do
     assert_receive {:memory_tracker_state_update, "issue-waiting", "Rework"}, 500
   end
 
+  test "waiting blocker monitor dispatches eligible blocker issues" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-waiting-blocker-dispatch-#{System.unique_integer([:positive])}"
+      )
+
+    waiting_issue = %Issue{
+      id: "issue-waiting-blocked",
+      identifier: "MT-704",
+      title: "Waiting for dependency",
+      state: "Waiting",
+      blocked_by: [%{id: "issue-blocker", identifier: "MT-705", state: "Todo"}]
+    }
+
+    blocker_issue = %Issue{
+      id: "issue-blocker",
+      identifier: "MT-705",
+      title: "Resolve dependency",
+      state: "Todo",
+      blocked_by: []
+    }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: test_root,
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_waiting_state: "Waiting",
+      codex_command: "sleep 60",
+      codex_read_timeout_ms: 10,
+      poll_interval_ms: 30_000
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [waiting_issue, blocker_issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    try do
+      assert {:ok, state} =
+               Orchestrator.run_waiting_blocker_monitor_for_test(%Orchestrator.State{
+                 running: %{},
+                 claimed: MapSet.new(),
+                 blocked: %{},
+                 retry_attempts: %{},
+                 max_concurrent_agents: 2,
+                 poll_interval_ms: 30_000
+               })
+
+      assert Map.has_key?(state.running, blocker_issue.id)
+      assert MapSet.member?(state.claimed, blocker_issue.id)
+      refute MapSet.member?(state.claimed, waiting_issue.id)
+      assert state.waiting_blocker_monitor_status.scanned_count == 1
+      assert state.waiting_blocker_monitor_status.blocked_waiting_count == 1
+      assert state.waiting_blocker_monitor_status.blocker_candidate_count == 1
+      assert state.waiting_blocker_monitor_status.dispatched_count == 1
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "waiting issues with live resource gate markers stay in Waiting" do
     test_root =
       Path.join(
@@ -703,7 +833,7 @@ defmodule SymphonyElixir.CoreTest do
 
     marker_dir = Path.join([test_root, issue.identifier, ".symphony"])
     File.mkdir_p!(marker_dir)
-    File.write!(Path.join(marker_dir, "cloud-gate-blocked"), "Frappe Cloud SSH auth unavailable\n")
+    File.write!(Path.join(marker_dir, "cloud-gate-blocked"), "Example App Cloud SSH auth unavailable\n")
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
@@ -846,7 +976,7 @@ defmodule SymphonyElixir.CoreTest do
 
     File.write!(
       Path.join([workspace, ".symphony", "cloud-gate-blocked"]),
-      "Frappe Cloud deploy-state blocker; no live lock or async job is present\n"
+      "Example App Cloud deploy-state blocker; no live lock or async job is present\n"
     )
 
     on_exit(fn -> File.rm_rf(workspace) end)
@@ -1194,6 +1324,50 @@ defmodule SymphonyElixir.CoreTest do
 
     refute Orchestrator.should_dispatch_comment_reply_issue_for_test(old_issue, state)
     assert Orchestrator.should_dispatch_comment_reply_issue_for_test(new_issue, state)
+  end
+
+  test "snapshot exposes built-in comment monitor role" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_comment_reply_states: ["Backlog", "Todo", "In Progress", "Merging", "Rework", "Waiting", "In Review"]
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :CommentMonitorSnapshotOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    snapshot = GenServer.call(pid, :snapshot)
+    role = Enum.find(snapshot.agent_roles, &(&1.name == "linear_comment_monitor"))
+
+    assert role.enabled == true
+    assert role.status == "idle"
+    assert role.command == "builtin:linear-comment-monitor"
+    assert role.metadata.states == ["Backlog", "Todo", "In Progress", "Merging", "Rework", "Waiting", "In Review"]
+  end
+
+  test "snapshot exposes built-in waiting blocker role" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_waiting_state: "Waiting")
+
+    orchestrator_name = Module.concat(__MODULE__, :WaitingBlockerSnapshotOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    snapshot = GenServer.call(pid, :snapshot)
+    role = Enum.find(snapshot.agent_roles, &(&1.name == "waiting_blocker_audit"))
+
+    assert role.enabled == true
+    assert role.status == "idle"
+    assert role.command == "builtin:waiting-blocker-monitor"
+    assert role.metadata.waiting_state == "Waiting"
   end
 
   test "normal dispatch preserves a slot when a comment reply is pending" do
@@ -1968,7 +2142,7 @@ defmodule SymphonyElixir.CoreTest do
     port =
       Port.open({:spawn_executable, System.find_executable("bash")}, [
         :binary,
-        args: ["-c", "exec -a with_frappe_cloud_deploy_lock.sh sleep 60"]
+        args: ["-c", "exec -a resource_lock_holder.sh sleep 60"]
       ])
 
     {:os_pid, owner_pid} = Port.info(port, :os_pid)
@@ -2406,6 +2580,7 @@ defmodule SymphonyElixir.CoreTest do
     prompt = PromptBuilder.build_prompt(issue, attempt: 2)
 
     assert prompt =~ "You are working on a Linear ticket `MT-616`"
+    assert prompt =~ "Repository: Symphony (`symphony`)"
     assert prompt =~ "Issue context:"
     assert prompt =~ "Identifier: MT-616"
     assert prompt =~ "Title: Use rich templates for WORKFLOW.md"

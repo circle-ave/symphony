@@ -607,11 +607,23 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp latest_actionable_comment(%{"comments" => %{"nodes" => comments}}) when is_list(comments) do
     comments
-    |> Enum.filter(&actionable_comment?/1)
-    |> Enum.max_by(&comment_sort_key/1, fn -> nil end)
+    |> Enum.sort_by(&comment_sort_key/1, :desc)
+    |> Enum.reduce_while(nil, fn comment, _acc ->
+      cond do
+        handled_comment_reply?(comment) -> {:halt, nil}
+        actionable_comment?(comment) -> {:halt, comment}
+        true -> {:cont, nil}
+      end
+    end)
   end
 
   defp latest_actionable_comment(_issue), do: nil
+
+  defp handled_comment_reply?(%{"body" => body}) when is_binary(body) do
+    String.contains?(body, @comment_reply_marker)
+  end
+
+  defp handled_comment_reply?(_comment), do: false
 
   defp actionable_comment?(%{"body" => body}) when is_binary(body) do
     body = String.trim(body)

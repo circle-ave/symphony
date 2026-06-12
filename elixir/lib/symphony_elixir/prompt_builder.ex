@@ -18,7 +18,8 @@ defmodule SymphonyElixir.PromptBuilder do
     |> Solid.render!(
       %{
         "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
+        "issue" => issue |> Map.from_struct() |> to_solid_map(),
+        "repository" => Config.selected_repository() |> repository_context()
       },
       @render_opts
     )
@@ -55,6 +56,15 @@ defmodule SymphonyElixir.PromptBuilder do
   defp to_solid_value(value) when is_list(value), do: Enum.map(value, &to_solid_value/1)
   defp to_solid_value(value), do: value
 
+  defp repository_context(nil), do: nil
+
+  defp repository_context(repository) do
+    repository
+    |> Map.from_struct()
+    |> Map.take([:id, :name, :url, :branch])
+    |> to_solid_map()
+  end
+
   defp default_prompt(prompt) when is_binary(prompt) do
     if String.trim(prompt) == "" do
       Config.workflow_prompt()
@@ -76,6 +86,14 @@ defmodule SymphonyElixir.PromptBuilder do
     session = checkpoint_get(checkpoint, "session") || %{}
     codex = checkpoint_get(checkpoint, "codex") || %{}
 
+    frozen_at = checkpoint_value_or(checkpoint, "frozen_at", "unknown")
+    checkpoint_path = checkpoint_value_or(checkpoint, "path", "n/a")
+    issue_identifier = checkpoint_value_or(issue, "identifier", "unknown")
+    issue_state = checkpoint_value_or(issue, "state", "unknown")
+    session_id = checkpoint_value_or(session, "session_id", "unknown")
+    turn_count = checkpoint_value_or(session, "turn_count", 0)
+    last_message = checkpoint_value_or(codex, "last_message", "n/a")
+
     stream_lines =
       codex
       |> checkpoint_get("stream_window")
@@ -84,12 +102,12 @@ defmodule SymphonyElixir.PromptBuilder do
     """
     Symphony resume checkpoint:
 
-    - This issue was frozen for an operator restart at #{checkpoint_get(checkpoint, "frozen_at") || "unknown"}.
+    - This issue was frozen for an operator restart at #{frozen_at}.
     - Resume from the preserved workspace and workpad state. Do not restart from scratch.
-    - Checkpoint file: #{checkpoint_get(checkpoint, "path") || "n/a"}
-    - Issue: #{checkpoint_get(issue, "identifier") || "unknown"} / #{checkpoint_get(issue, "state") || "unknown"}
-    - Previous session: #{checkpoint_get(session, "session_id") || "unknown"}; turns completed: #{checkpoint_get(session, "turn_count") || 0}.
-    - Last observed activity: #{checkpoint_get(codex, "last_message") || "n/a"}
+    - Checkpoint file: #{checkpoint_path}
+    - Issue: #{issue_identifier} / #{issue_state}
+    - Previous session: #{session_id}; turns completed: #{turn_count}.
+    - Last observed activity: #{last_message}
     #{stream_lines}
     """
     |> String.trim_trailing()
@@ -99,20 +117,21 @@ defmodule SymphonyElixir.PromptBuilder do
     lines =
       stream_window
       |> Enum.take(-5)
-      |> Enum.map(fn entry ->
+      |> Enum.map_join("\n", fn entry ->
         "- #{checkpoint_get(entry, "message") || inspect(entry, limit: 8, printable_limit: 120)}"
       end)
-      |> Enum.join("\n")
 
     "\nRecent stream before freeze:\n#{lines}"
   end
 
   defp resume_stream_lines(_stream_window), do: ""
 
+  defp checkpoint_value_or(map, key, default) do
+    checkpoint_get(map, key) || default
+  end
+
   defp checkpoint_get(map, key) when is_map(map) and is_binary(key) do
     Map.get(map, key) || Map.get(map, String.to_atom(key))
-  rescue
-    ArgumentError -> Map.get(map, key)
   end
 
   defp checkpoint_get(_map, _key), do: nil

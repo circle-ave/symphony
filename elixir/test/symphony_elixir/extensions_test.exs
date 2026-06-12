@@ -463,8 +463,9 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_finished_at" => state_payload["agent_roles"] |> List.first() |> Map.fetch!("last_finished_at"),
                  "last_duration_ms" => 1_250,
                  "last_exit_status" => 0,
-                 "last_output" => "CIR-92 live-cloud-hash-blocker",
-                 "last_error" => nil
+                 "last_output" => "MT-92 live-cloud-hash-blocker",
+                 "last_error" => nil,
+                 "metadata" => %{}
                }
              ]
            }
@@ -472,9 +473,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     conn = get(build_conn(), "/api/v1/controls")
     controls_payload = json_response(conn, 200)
 
-    assert controls_payload["model"] == "gpt-5.5"
-    assert controls_payload["reasoning_effort"] == "high"
-    assert controls_payload["reasoning_effort_options"] == ["low", "medium", "high", "xhigh"]
+    assert controls_payload["command"] ==
+             "codex --config 'model=\"gpt-5.5\"' --config model_reasoning_effort=high app-server"
+
+    refute Map.has_key?(controls_payload, "model")
+    refute Map.has_key?(controls_payload, "reasoning_effort")
+    refute Map.has_key?(controls_payload, "reasoning_effort_options")
 
     conn =
       post(build_conn(), "/api/v1/controls", %{
@@ -483,9 +487,10 @@ defmodule SymphonyElixir.ExtensionsTest do
       })
 
     controls_payload = json_response(conn, 200)
-    assert controls_payload["model"] == "gpt-5-mini"
-    assert controls_payload["reasoning_effort"] == "low"
-    assert Config.settings!().codex.command =~ "gpt-5-mini"
+    refute Map.has_key?(controls_payload, "model")
+    refute Map.has_key?(controls_payload, "reasoning_effort")
+    assert Config.settings!().codex.command =~ "gpt-5.5"
+    refute Config.settings!().codex.command =~ "gpt-5-mini"
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")
     issue_payload = json_response(conn, 200)
@@ -764,7 +769,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Operations Dashboard"
+    assert html =~ "Ops Dashboard"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
@@ -775,22 +780,24 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
     assert html =~ "Runtime"
-    assert html =~ "Agent controls"
-    assert html =~ "Operator roles"
+    assert html =~ "Controls"
+    assert html =~ "Roles"
     assert html =~ "waiting_blocker_audit"
-    assert html =~ "CIR-92 live-cloud-hash-blocker"
+    assert html =~ "MT-92 live-cloud-hash-blocker"
     assert html =~ "Workload"
     assert html =~ "Capacity"
     assert html =~ "Throughput"
     assert html =~ "Agents"
     assert html =~ "Theme"
-    assert html =~ "Recent stream"
+    assert html =~ "Stream"
     assert html =~ "recent stream entry"
     assert html =~ "gpt-5.5"
+    refute html =~ "name=\"controls[model]\""
+    refute html =~ "Reasoning effort"
     assert html =~ "Live"
     assert html =~ "Offline"
     assert html =~ "Copy ID"
-    assert html =~ "Inspect thread"
+    assert html =~ "Inspect"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
@@ -800,20 +807,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     html =
       view
-      |> form("form[phx-submit=\"update-controls\"]",
-        controls: %{model: "gpt-5-mini", reasoning_effort: "xhigh"}
-      )
-      |> render_submit()
-
-    assert html =~ "Saved"
-    assert html =~ "gpt-5-mini"
-    assert html =~ ~r/<option selected="" value="xhigh">XHigh \/ deepest<\/option>/
-    assert Config.settings!().codex.command =~ "gpt-5-mini"
-    assert Config.settings!().codex.command =~ "model_reasoning_effort=xhigh"
-
-    html =
-      view
-      |> element("button[phx-value-issue=\"MT-HTTP\"]", "Inspect thread")
+      |> element("button[phx-value-issue=\"MT-HTTP\"]", "Inspect")
       |> render_click()
 
     assert html =~ "Agent thread"
@@ -1036,7 +1030,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           last_finished_at: DateTime.utc_now(),
           last_duration_ms: 1_250,
           last_exit_status: 0,
-          last_output: "CIR-92 live-cloud-hash-blocker",
+          last_output: "MT-92 live-cloud-hash-blocker",
           last_error: nil
         }
       ]

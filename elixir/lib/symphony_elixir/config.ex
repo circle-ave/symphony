@@ -83,6 +83,36 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec selected_repository() :: struct() | nil
+  def selected_repository do
+    settings!()
+    |> selected_repository()
+  end
+
+  @spec selected_repository(Schema.t()) :: struct() | nil
+  def selected_repository(%Schema{} = settings) do
+    Schema.selected_repository(settings.repositories)
+  end
+
+  @spec repository_options() :: [map()]
+  def repository_options do
+    settings!()
+    |> repository_options()
+  end
+
+  @spec repository_options(Schema.t()) :: [map()]
+  def repository_options(%Schema{} = settings) do
+    settings.repositories.allowed
+    |> Enum.map(fn repo ->
+      %{
+        id: repo.id,
+        name: repo.name || repo.id,
+        url: repo.url,
+        selected: repo.id == settings.repositories.selected
+      }
+    end)
+  end
+
   @spec server_port() :: non_neg_integer() | nil
   def server_port do
     case Application.get_env(:symphony_elixir, :server_port_override) do
@@ -115,6 +145,13 @@ defmodule SymphonyElixir.Config do
   end
 
   defp validate_semantics(settings) do
+    case validate_repository_selection(settings) do
+      :ok -> validate_tracker_semantics(settings)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_tracker_semantics(settings) do
     cond do
       is_nil(settings.tracker.kind) ->
         {:error, :missing_tracker_kind}
@@ -131,6 +168,39 @@ defmodule SymphonyElixir.Config do
       true ->
         :ok
     end
+  end
+
+  defp validate_repository_selection(%Schema{} = settings) do
+    repositories = settings.repositories
+    allowed = repositories.allowed
+    selected_repository = selected_repository(settings)
+
+    cond do
+      allowed == [] ->
+        :ok
+
+      not is_binary(repositories.selected) ->
+        {:error, :missing_selected_repository}
+
+      is_nil(selected_repository) ->
+        {:error, {:unknown_selected_repository, repositories.selected}}
+
+      missing_repository_url?(selected_repository) ->
+        {:error, {:invalid_repository, repositories.selected, :missing_url}}
+
+      duplicate_repository_ids?(allowed) ->
+        {:error, :duplicate_repository_ids}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp missing_repository_url?(repository), do: repository.url in [nil, ""]
+
+  defp duplicate_repository_ids?(repositories) do
+    ids = Enum.map(repositories, & &1.id)
+    ids != Enum.uniq(ids)
   end
 
   defp format_config_error(reason) do

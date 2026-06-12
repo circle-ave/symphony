@@ -23,6 +23,7 @@ defmodule SymphonyElixir.ReviewRecipe do
       [workpad] ->
         with {:ok, section} <- demo_recipe_section(field(workpad, "body")),
              {:ok, url} <- extract_open_url(section),
+             {:ok, credentials} <- extract_credentials(section),
              {:ok, claims} <- extract_claims(section) do
           {:ok,
            %{
@@ -30,7 +31,8 @@ defmodule SymphonyElixir.ReviewRecipe do
              url: url,
              claims: claims,
              lane_action: :human_owned
-           }}
+           }
+           |> maybe_put_credentials(credentials)}
         end
 
       duplicates ->
@@ -133,10 +135,8 @@ defmodule SymphonyElixir.ReviewRecipe do
       |> Enum.join("\n")
 
     claims =
-      verify_text
-      |> backtick_values()
-      |> case do
-        [] -> backtick_values(section)
+      case backtick_values(verify_text) do
+        [] -> section |> remove_credential_lines() |> backtick_values()
         values -> values
       end
       |> Enum.reject(&String.starts_with?(&1, "http"))
@@ -155,6 +155,116 @@ defmodule SymphonyElixir.ReviewRecipe do
     |> Enum.map(fn [_match, value] -> String.trim(value) end)
     |> Enum.reject(&(&1 == ""))
   end
+
+  defp extract_credentials(section) do
+    username = extract_credential_value(section, ["Username", "User", "Login username"])
+    password = extract_credential_value(section, ["Password", "Pass", "Login password"])
+    inline_username = extract_inline_credential_value(section, ~r/(?:username|user|email)/i)
+    inline_password = extract_inline_credential_value(section, ~r/(?:password|pass)/i)
+
+    username = username || inline_username
+    password = password || inline_password
+
+    cond do
+      is_binary(username) and is_binary(password) ->
+        {:ok, %{username: username, password: password}}
+
+      credentials_required?(section) ->
+        {:error, %{reason: :missing_credentials}}
+
+      is_binary(username) or is_binary(password) ->
+        {:error, %{reason: :incomplete_credentials}}
+
+      true ->
+        {:ok, nil}
+    end
+  end
+
+  defp extract_credential_value(section, labels) do
+    section
+    |> String.split(~r/\R/)
+    |> Enum.find_value(fn line ->
+      label = Enum.find(labels, &credential_label_line?(line, &1))
+      if label, do: line |> credential_line_value(label) |> clean_credential_value()
+    end)
+  end
+
+  defp credential_label_line?(line, label) do
+    Regex.match?(~r/^\s*-\s*#{Regex.escape(label)}\s*:/i, line)
+  end
+
+  defp credential_line_value(line, label) do
+    Regex.replace(~r/^\s*-\s*#{Regex.escape(label)}\s*:\s*/i, line, "")
+  end
+
+  defp extract_inline_credential_value(section, label_regex) do
+    section
+    |> String.split(~r/\R/)
+    |> Enum.filter(&credential_container_line?/1)
+    |> Enum.find_value(&extract_named_value(&1, label_regex))
+  end
+
+  defp credential_container_line?(line) do
+    Regex.match?(~r/^\s*-\s*(?:Login|Auth|Credentials)\s*:/i, line)
+  end
+
+  defp extract_named_value(line, label_regex) do
+    regexes = [
+      ~r/#{Regex.source(label_regex)}\s*[:=]?\s*`([^`]+)`/i,
+      ~r/#{Regex.source(label_regex)}\s*[:=]\s*([^\s;,]+)/i
+    ]
+
+    Enum.find_value(regexes, fn regex ->
+      case Regex.run(regex, line) do
+        [_match, value] -> clean_credential_value(value)
+        _ -> nil
+      end
+    end)
+  end
+
+  defp clean_credential_value(value) do
+    value
+    |> String.trim()
+    |> String.trim_leading("`")
+    |> String.trim_trailing("`")
+    |> String.trim_trailing(",")
+    |> String.trim_trailing(";")
+    |> String.trim()
+    |> case do
+      "" -> nil
+      cleaned -> cleaned
+    end
+  end
+
+  defp credentials_required?(section) do
+    no_auth? =
+      Regex.match?(
+        ~r/(?:login|auth|authentication)\s*:\s*`?not required`?|no (?:login|auth|authentication) required/i,
+        section
+      )
+
+    required? =
+      Regex.match?(
+        ~r/(?:login|auth|authentication)\s*:\s*`?required`?|(?:login|auth|authentication) required|requires (?:login|auth|authentication)|sign in required/i,
+        section
+      )
+
+    required? and not no_auth?
+  end
+
+  defp remove_credential_lines(section) do
+    section
+    |> String.split(~r/\R/)
+    |> Enum.reject(&credential_line?/1)
+    |> Enum.join("\n")
+  end
+
+  defp credential_line?(line) do
+    Regex.match?(~r/^\s*-\s*(?:Username|User|Login username|Password|Pass|Login password|Login|Auth|Credentials)\s*:/i, line)
+  end
+
+  defp maybe_put_credentials(recipe, nil), do: recipe
+  defp maybe_put_credentials(recipe, credentials), do: Map.put(recipe, :credentials, credentials)
 
   defp trim_url(url), do: Regex.replace(~r/[`.,;]+$/, url, "")
 
