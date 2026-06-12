@@ -21,7 +21,7 @@ defmodule SymphonyElixir.AgentRunner do
           {:continue, Issue.t()} | {:done, Issue.t()} | {:error, term()}
   def continue_with_issue_for_test(%Issue{} = issue, issue_state_fetcher)
       when is_function(issue_state_fetcher, 1) do
-    continue_with_issue?(issue, issue_state_fetcher)
+    continue_with_issue_state(issue, issue_state_fetcher)
   end
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
