@@ -219,12 +219,42 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule ScopeAudit do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:command, :string)
+      field(:max_tokens, :integer, default: 40_000)
+      field(:timeout_ms, :integer, default: 300_000)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:enabled, :command, :max_tokens, :timeout_ms], empty_values: [])
+      |> validate_number(:max_tokens, greater_than: 0)
+      |> validate_number(:timeout_ms, greater_than: 0)
+      |> validate_change(:command, fn
+        :command, command when is_binary(command) ->
+          if String.trim(command) == "", do: [command: "must not be blank"], else: []
+
+        :command, _command ->
+          []
+      end)
+    end
+  end
+
   defmodule Agent do
     @moduledoc false
     use Ecto.Schema
     import Ecto.Changeset
 
     alias SymphonyElixir.Config.Schema
+    alias SymphonyElixir.Config.Schema.ScopeAudit
 
     @primary_key false
     embedded_schema do
@@ -237,6 +267,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_run_tokens, :integer)
       field(:max_concurrent_agents_by_state, :map, default: %{})
       field(:roles, :map, default: %{})
+      embeds_one(:scope_audit, ScopeAudit, on_replace: :update, defaults_to_struct: true)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -268,6 +299,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
       |> update_change(:roles, &Schema.normalize_agent_roles/1)
       |> Schema.validate_agent_roles(:roles)
+      |> cast_embed(:scope_audit, with: &ScopeAudit.changeset/2)
     end
   end
 

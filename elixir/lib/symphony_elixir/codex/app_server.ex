@@ -283,6 +283,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       |> maybe_put_policy(:approval_policy, Keyword.get(opts, :approval_policy))
       |> maybe_put_policy(:thread_sandbox, Keyword.get(opts, :thread_sandbox))
       |> maybe_put_policy(:turn_sandbox_policy, Keyword.get(opts, :turn_sandbox_policy))
+      |> maybe_put_policy(:dynamic_tools, Keyword.get(opts, :dynamic_tools))
 
     {:ok, policies}
   end
@@ -299,7 +300,9 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_thread(port, workspace, %{approval_policy: approval_policy, thread_sandbox: thread_sandbox}) do
+  defp start_thread(port, workspace, %{approval_policy: approval_policy, thread_sandbox: thread_sandbox} = session_policies) do
+    dynamic_tools = Map.get(session_policies, :dynamic_tools, DynamicTool.tool_specs())
+
     send_message(port, %{
       "method" => "thread/start",
       "id" => @thread_start_id,
@@ -307,7 +310,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         "approvalPolicy" => approval_policy,
         "sandbox" => thread_sandbox,
         "cwd" => workspace,
-        "dynamicTools" => DynamicTool.tool_specs()
+        "dynamicTools" => dynamic_tools
       }
     })
 

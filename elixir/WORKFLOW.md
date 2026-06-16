@@ -39,6 +39,11 @@ agent:
   max_turns: 5
   max_turn_tokens: 90000
   max_run_tokens: 180000
+  scope_audit:
+    enabled: true
+    command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5-mini"' --config model_reasoning_effort=medium app-server
+    max_tokens: 40000
+    timeout_ms: 300000
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
   model_router:

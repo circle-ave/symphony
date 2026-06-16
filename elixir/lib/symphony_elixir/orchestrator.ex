@@ -1477,12 +1477,18 @@ defmodule SymphonyElixir.Orchestrator do
   defp codex_message_method(_message), do: nil
 
   defp terminate_task(pid) when is_pid(pid) do
-    case Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid) do
-      :ok ->
-        :ok
-
-      {:error, :not_found} ->
+    case Process.whereis(SymphonyElixir.TaskSupervisor) do
+      nil ->
         Process.exit(pid, :shutdown)
+
+      _task_supervisor ->
+        case Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid) do
+          :ok ->
+            :ok
+
+          {:error, :not_found} ->
+            Process.exit(pid, :shutdown)
+        end
     end
   end
 
@@ -2002,9 +2008,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, runner_opts) do
-    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, Keyword.merge(runner_opts, attempt: attempt, worker_host: worker_host))
-         end) do
+    runner = fn ->
+      AgentRunner.run(issue, recipient, Keyword.merge(runner_opts, attempt: attempt, worker_host: worker_host))
+    end
+
+    case start_agent_task(runner) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
 
@@ -2054,6 +2062,13 @@ defmodule SymphonyElixir.Orchestrator do
           error: "failed to spawn agent: #{inspect(reason)}",
           worker_host: worker_host
         })
+    end
+  end
+
+  defp start_agent_task(runner) when is_function(runner, 0) do
+    case Process.whereis(SymphonyElixir.TaskSupervisor) do
+      nil -> Task.start(runner)
+      _task_supervisor -> Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, runner)
     end
   end
 

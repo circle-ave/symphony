@@ -40,6 +40,8 @@ defmodule SymphonyElixir.CoreTest do
     assert config.agent.max_turns == 20
     assert config.agent.max_turn_tokens == nil
     assert config.agent.max_run_tokens == nil
+    assert config.agent.scope_audit.enabled == false
+    assert config.agent.scope_audit.max_tokens == 40_000
     assert config.agent.roles == %{}
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -78,6 +80,19 @@ defmodule SymphonyElixir.CoreTest do
     write_workflow_file!(Workflow.workflow_file_path(), max_turn_tokens: 90_000, max_run_tokens: 180_000)
     assert Config.settings!().agent.max_turn_tokens == 90_000
     assert Config.settings!().agent.max_run_tokens == 180_000
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      scope_audit: %{enabled: true, command: "codex-mini app-server", max_tokens: 20_000, timeout_ms: 120_000}
+    )
+
+    assert Config.settings!().agent.scope_audit.enabled == true
+    assert Config.settings!().agent.scope_audit.command == "codex-mini app-server"
+    assert Config.settings!().agent.scope_audit.max_tokens == 20_000
+    assert Config.settings!().agent.scope_audit.timeout_ms == 120_000
+
+    write_workflow_file!(Workflow.workflow_file_path(), scope_audit: %{enabled: true, max_tokens: 0})
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.scope_audit.max_tokens"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_roles: %{
@@ -2970,6 +2985,67 @@ defmodule SymphonyElixir.CoreTest do
       workspace = Path.join(workspace_root, workspace_name)
       assert File.exists?(workspace)
       assert File.exists?(Path.join(workspace, "README.md"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "blocked scope audit parks issue before implementation starts" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-scope-audit-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_waiting_state: "Waiting",
+        workspace_root: workspace_root,
+        hook_before_run: "touch before-run-ran",
+        codex_command: "/bin/false app-server",
+        scope_audit: %{enabled: true}
+      )
+
+      issue = %Issue{
+        id: "issue-scope-audit",
+        identifier: "MT-560",
+        title: "Ambiguous asset generation",
+        description: "Generate missing assets, but target surface is unclear.",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-560",
+        labels: []
+      }
+
+      audit_runner = fn _issue, _workspace, _recipient, _opts ->
+        {:ok,
+         %SymphonyElixir.ScopeAudit.Result{
+           verdict: :blocked,
+           summary: "Ticket could mean generated media or deterministic fallbacks.",
+           intended_workflow: "Tenant asks an agent to generate or replace missing assets.",
+           target_surfaces: "blocked",
+           acceptance_source: "ticket body only",
+           evidence: ["No target module list is present."],
+           confusions: ["Which modules and asset slots are in scope?"]
+         }}
+      end
+
+      assert :ok = AgentRunner.run(issue, nil, scope_audit_runner: audit_runner)
+
+      assert_receive {:memory_tracker_comment, "issue-scope-audit", body}, 500
+      assert body =~ "## Codex Workpad"
+      assert body =~ "Verdict: `blocked`"
+      assert body =~ "Which modules and asset slots are in scope?"
+
+      assert_receive {:memory_tracker_state_update, "issue-scope-audit", "Waiting"}, 500
+
+      workspace = Path.join(workspace_root, "MT-560")
+      refute File.exists?(Path.join(workspace, "before-run-ran"))
     after
       File.rm_rf(test_root)
     end

@@ -5,7 +5,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.Codex.{AppServer, ModelRouter}
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, ScopeAudit, Tracker, Workspace}
 
   @resource_gate_markers %{
     cloud_gate: Path.join([".symphony", "cloud-gate-blocked"]),
@@ -50,8 +50,17 @@ defmodule SymphonyElixir.AgentRunner do
         send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
         try do
-          with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+          case run_scope_audit_preflight(workspace, issue, codex_update_recipient, opts, worker_host) do
+            :clear ->
+              with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
+                run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+              end
+
+            :parked ->
+              :ok
+
+            {:error, reason} ->
+              {:error, reason}
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -126,6 +135,28 @@ defmodule SymphonyElixir.AgentRunner do
     Map.get(map, key) || Map.get(map, String.to_atom(key))
   rescue
     ArgumentError -> Map.get(map, key)
+  end
+
+  defp run_scope_audit_preflight(workspace, issue, codex_update_recipient, opts, worker_host) do
+    audit_runner = Keyword.get(opts, :scope_audit_runner, &ScopeAudit.run/4)
+    audit_opts = Keyword.put(opts, :worker_host, worker_host)
+
+    case audit_runner.(issue, workspace, codex_update_recipient, audit_opts) do
+      {:ok, :disabled} ->
+        :clear
+
+      {:ok, %ScopeAudit.Result{verdict: :clear}} ->
+        :clear
+
+      {:ok, %ScopeAudit.Result{verdict: :blocked} = result} ->
+        with :ok <- ScopeAudit.park_blocked_issue(issue, result) do
+          Logger.info("Scope audit parked #{issue_context(issue)} in waiting state")
+          :parked
+        end
+
+      {:error, reason} ->
+        {:error, {:scope_audit_failed, reason}}
+    end
   end
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do

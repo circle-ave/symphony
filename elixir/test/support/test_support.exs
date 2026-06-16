@@ -127,6 +127,7 @@ defmodule SymphonyElixir.TestSupport do
           max_run_tokens: nil,
           max_concurrent_agents_by_state: %{},
           agent_roles: %{},
+          scope_audit: %{enabled: false},
           codex_command: "codex app-server",
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
@@ -175,6 +176,7 @@ defmodule SymphonyElixir.TestSupport do
     max_run_tokens = Keyword.get(config, :max_run_tokens)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     agent_roles = Keyword.get(config, :agent_roles)
+    scope_audit = Keyword.get(config, :scope_audit)
     codex_command = Keyword.get(config, :codex_command)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
@@ -225,6 +227,7 @@ defmodule SymphonyElixir.TestSupport do
         "  max_run_tokens: #{yaml_value(max_run_tokens)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "  roles: #{yaml_value(agent_roles)}",
+        "  scope_audit: #{yaml_value(scope_audit)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",
         "  approval_policy: #{yaml_value(codex_approval_policy)}",
