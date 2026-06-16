@@ -74,6 +74,49 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            } = Enum.find(specs, &(&1["name"] == "linear_comment_reply"))
   end
 
+  test "linear_graphql allows issue mutations when URL project slug matches API project slug" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "onyx-a314e03aa1ba")
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{
+          "query" => """
+          mutation UpdateIssueState($id: String!, $stateId: String!) {
+            issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+          }
+          """,
+          "variables" => %{"id" => "issue-onyx", "stateId" => "state-review"}
+        },
+        linear_client: fn query, variables, _opts ->
+          cond do
+            String.contains?(query, "SymphonyLinearScopeIssue") ->
+              send(test_pid, {:linear_client_called, :scope_lookup, variables})
+
+              {:ok,
+               %{
+                 "data" => %{
+                   "issue" => %{
+                     "id" => variables["issueId"],
+                     "identifier" => "CIR-147",
+                     "project" => %{"slugId" => "a314e03aa1ba"}
+                   }
+                 }
+               }}
+
+            String.contains?(query, "issueUpdate") ->
+              send(test_pid, {:linear_client_called, :state_update, variables})
+              {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+          end
+        end
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_client_called, :scope_lookup, %{"issueId" => "issue-onyx"}}
+    assert_received {:linear_client_called, :state_update, %{"id" => "issue-onyx", "stateId" => "state-review"}}
+  end
+
   test "linear_comment_reply updates the active workpad and posts a marked reply" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
     Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())

@@ -31,6 +31,7 @@ defmodule SymphonyElixir.Orchestrator do
     Path.join([".symphony", "waiting-blocked"])
   ]
   @comment_reply_reserved_slots 1
+  @comment_reply_max_turn_tokens 60_000
   @comment_reply_marker "<!-- symphony-comment-reply -->"
   @comment_reply_monitor_role_name "linear_comment_monitor"
   @waiting_blocker_role_name "waiting_blocker_audit"
@@ -3704,9 +3705,11 @@ defmodule SymphonyElixir.Orchestrator do
     run_tokens = Map.get(running_entry, :codex_total_tokens, 0)
     turn_tokens = current_turn_tokens(running_entry)
 
+    max_turn_tokens = effective_max_turn_tokens(running_entry, agent_config)
+
     cond do
-      positive_integer?(agent_config.max_turn_tokens) and turn_tokens > agent_config.max_turn_tokens ->
-        %{kind: :turn, total_tokens: turn_tokens, limit: agent_config.max_turn_tokens}
+      positive_integer?(max_turn_tokens) and turn_tokens > max_turn_tokens ->
+        %{kind: :turn, total_tokens: turn_tokens, limit: max_turn_tokens}
 
       positive_integer?(agent_config.max_run_tokens) and run_tokens > agent_config.max_run_tokens ->
         %{kind: :run, total_tokens: run_tokens, limit: agent_config.max_run_tokens}
@@ -3717,6 +3720,20 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp token_budget_exceeded(_running_entry, _agent_config), do: nil
+
+  defp effective_max_turn_tokens(%{comment_reply: true}, agent_config) do
+    configured = Map.get(agent_config, :max_turn_tokens)
+
+    if positive_integer?(configured) do
+      min(configured, @comment_reply_max_turn_tokens)
+    else
+      @comment_reply_max_turn_tokens
+    end
+  end
+
+  defp effective_max_turn_tokens(_running_entry, agent_config) do
+    Map.get(agent_config, :max_turn_tokens)
+  end
 
   defp token_snapshot(running_entry) when is_map(running_entry) do
     %{

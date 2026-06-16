@@ -372,9 +372,18 @@ defmodule SymphonyElixir.Codex.ModelRouter do
       [
         "--config features.apps=false",
         "--config features.plugins=false",
+        "--config features.browser_use=false",
+        "--config features.chronicle=false",
+        "--config features.computer_use=false",
+        "--config features.image_generation=false",
+        "--config features.memories=false",
         "--config features.multi_agent=false",
+        "--config features.shell_snapshot=false",
+        "--config features.shell_tool=false",
         "--config features.tool_search=false",
         "--config features.tool_suggest=false",
+        "--config features.unified_exec=false",
+        "--config features.workspace_dependencies=false",
         "--config skills.bundled.enabled=false",
         "--config project_doc_max_bytes=0"
       ]

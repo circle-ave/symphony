@@ -798,6 +798,86 @@ defmodule SymphonyElixir.CoreTest do
     refute Process.alive?(agent_pid)
   end
 
+  test "comment reply turn token budget is capped below normal turn budget" do
+    issue_id = "issue-comment-token-cap"
+    issue_identifier = "MT-569"
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_turn_tokens: 90_000)
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        after
+          5_000 -> :ok
+        end
+      end)
+
+    ref = Process.monitor(agent_pid)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: ref,
+          identifier: issue_identifier,
+          issue: %Issue{id: issue_id, state: "In Review", identifier: issue_identifier},
+          comment_reply: true,
+          session_id: "thread-comment-reply",
+          started_at: DateTime.utc_now(),
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_stream_window: [],
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          codex_turn_base_total_tokens: 0,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          turn_count: 1
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    {:noreply, updated_state} =
+      Orchestrator.handle_info(
+        {:codex_worker_update, issue_id,
+         %{
+           event: :notification,
+           payload: %{
+             "method" => "codex/event/token_count",
+             "params" => %{
+               "msg" => %{
+                 "type" => "token_count",
+                 "info" => %{
+                   "total_token_usage" => %{
+                     "input_tokens" => 60_000,
+                     "output_tokens" => 1,
+                     "total_tokens" => 60_001
+                   }
+                 }
+               }
+             }
+           },
+           timestamp: DateTime.utc_now()
+         }},
+        state
+      )
+
+    refute Map.has_key?(updated_state.running, issue_id)
+    assert %{^issue_id => blocked_entry} = updated_state.blocked
+    assert blocked_entry.error == "turn token budget exceeded: total_tokens=60001 limit=60000"
+    assert updated_state.retry_attempts == %{}
+
+    Process.sleep(20)
+    refute Process.alive?(agent_pid)
+  end
+
   test "run token budget uses cumulative tokens while turn budget resets per turn" do
     issue_id = "issue-token-run"
     issue_identifier = "MT-559"

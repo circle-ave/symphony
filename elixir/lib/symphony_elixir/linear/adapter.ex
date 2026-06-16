@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   @behaviour SymphonyElixir.Tracker
 
-  alias SymphonyElixir.{Config, Linear.Client}
+  alias SymphonyElixir.{Config, Linear.Client, Linear.ProjectScope}
 
   @create_comment_mutation """
   mutation SymphonyCreateComment($issueId: String!, $body: String!) {
@@ -114,7 +114,7 @@ defmodule SymphonyElixir.Linear.Adapter do
   defp verify_issue_project(%{"data" => %{"issue" => %{"project" => %{"slugId" => slug_id}}}}) do
     selected_project_slug = Config.settings!().tracker.project_slug
 
-    if is_binary(selected_project_slug) and slug_id == selected_project_slug do
+    if ProjectScope.matches_slug?(selected_project_slug, slug_id) do
       :ok
     else
       {:error, {:issue_outside_selected_project, slug_id, selected_project_slug}}

@@ -423,6 +423,25 @@ defmodule SymphonyElixir.ExtensionsTest do
              Adapter.update_issue_state("issue-ccms", "Done")
   end
 
+  test "linear adapter accepts URL project slug that ends with API project slug" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_project_slug: "onyx-a314e03aa1ba"
+    )
+
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    Process.put({FakeLinearClient, :scope_slug}, "a314e03aa1ba")
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+    )
+
+    assert :ok = Adapter.create_comment("issue-onyx", "same project")
+    assert_receive {:graphql_called, create_comment_query, %{body: "same project", issueId: "issue-onyx"}}
+    assert create_comment_query =~ "commentCreate"
+  end
+
   test "phoenix observability api preserves state, issue, and refresh responses" do
     snapshot = static_snapshot()
     orchestrator_name = Module.concat(__MODULE__, :ObservabilityApiOrchestrator)

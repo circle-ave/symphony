@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.{Config, Linear.Client, Tracker}
+  alias SymphonyElixir.{Config, Linear.Client, Linear.ProjectScope, Tracker}
   alias SymphonyElixir.Jira.Client, as: JiraClient
 
   @linear_graphql_tool "linear_graphql"
@@ -577,7 +577,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     selected_project_slug = Config.settings!().tracker.project_slug
     issue_project_slug = payload_value(issue, ["project", "slugId"])
 
-    if is_binary(selected_project_slug) and issue_project_slug == selected_project_slug do
+    if ProjectScope.matches_slug?(selected_project_slug, issue_project_slug) do
       :ok
     else
       linear_scope_error("Blocked Linear mutation: target #{target_type} is outside the active Symphony project.", %{

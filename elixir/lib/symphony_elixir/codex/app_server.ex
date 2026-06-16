@@ -419,6 +419,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
         {:error, {:turn_cancelled, Map.get(payload, "params")}}
 
+      {:ok, %{"method" => "error"} = payload} ->
+        handle_turn_error(port, on_message, payload, payload_string)
+
       {:ok, %{"method" => method} = payload}
       when is_binary(method) ->
         handle_turn_method(
@@ -475,6 +478,21 @@ defmodule SymphonyElixir.Codex.AppServer do
       },
       metadata_from_message(port, payload)
     )
+  end
+
+  defp handle_turn_error(port, on_message, payload, payload_string) do
+    details = Map.get(payload, "params") || payload
+
+    emit_turn_event(
+      on_message,
+      :turn_error,
+      payload,
+      payload_string,
+      port,
+      details
+    )
+
+    {:error, {:turn_error, details}}
   end
 
   defp handle_turn_method(
