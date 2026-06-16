@@ -132,6 +132,7 @@ The issue is terminal. Do not modify anything. Report that no action was require
 - Do not code or change ticket content unless explicitly asked to process the review.
 - Poll for human/bot review updates and GitHub PR comments.
 - If processing review, use exactly one active `## Codex Workpad`, extract `Demo / Review Recipe`, run the visible browser review path, check console warnings/errors, and report the result for the reviewer.
+- Reject review recipes whose primary `Open:` target is a PR, source diff, CI run, Linear issue, Jira issue, or other project tracker. Those links are validation evidence, not a functional demo.
 - Treat login redirects, 404s, stale fixtures, and missing credentials as review failures/blockers.
 - If feedback requires code changes, move the issue to `Rework` and follow the rework packet.
 - The human reviewer owns final acceptance and lane decisions.
@@ -182,6 +183,7 @@ Execution loop:
 - Implement against the workpad checklist. Keep it current after meaningful milestones.
 - Treat ticket `Validation`, `Test Plan`, or `Testing` sections as mandatory.
 - For user-facing work, required acceptance includes an observe-only browser pass against the final review target; do not remount UI, patch app state, force success with internals, or count self-healing helpers as acceptance.
+- Every completed issue needs a functional `Demo / Review Recipe`. For backend, data, analytics, pipeline, or workflow work, use an app/runtime route, review environment, API endpoint, CLI command, or dashboard that demonstrates the ticket behavior. Do not use the PR, source diff, CI run, Linear issue, or Jira issue as the primary `Open:` target.
 - Temporary local proof edits are allowed only for verification and must be reverted before commit.
 - Before each push, rerun the required validation and fix failures.
 - Merge latest `origin/main`, resolve conflicts, rerun checks, push, create/update PR, attach PR URL to Linear, and ensure the PR has label `symphony`.
@@ -196,6 +198,7 @@ Completion bar before `Human Review`:
 - `Scope Confidence` is `clear`, with no unresolved `Confusions`.
 - Required tests/validation are green for the latest commit.
 - User-facing work has a passing independent acceptance review and current `Demo / Review Recipe`; include login credentials when required, otherwise `Login: not required`.
+- Non-user-facing work may mark independent browser acceptance as not applicable, but its `Demo / Review Recipe` must still demonstrate runtime/app behavior and must not be a PR/status-check inspection recipe.
 - PR checks are green, branch is pushed, PR is linked, and PR metadata is present.
 - Only then move to `Human Review`.
 {% endif %}
@@ -239,11 +242,11 @@ Workpad skeleton:
 - Evidence: `<screenshot/DOM/console/network/realtime observations>`
 
 ### Demo / Review Recipe
-- Open: `<final review URL>`
+- Open: `<final app/runtime/API/dashboard review URL; never a PR, source diff, CI run, Linear issue, or Jira issue>`
 - Login: `<not required, or required>`
 - Username: `<required only when login is required>`
 - Password: `<required only when login is required>`
-- Verify: `<visible claims>`
+- Verify: `<observable ticket behavior; PR/check metadata belongs in Validation or Notes>`
 
 ### Notes
 - <timestamped progress notes>

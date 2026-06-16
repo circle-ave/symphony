@@ -84,6 +84,26 @@ defmodule SymphonyElixir.ReviewRecipeTest do
     assert {:error, %{reason: :missing_credentials}} = ReviewRecipe.prepare(comments)
   end
 
+  test "prepare rejects PR or tracker URLs as the primary demo target" do
+    comments = [
+      %{
+        "id" => "current-workpad",
+        "body" => """
+        ## Codex Workpad
+
+        ### Demo / Review Recipe
+
+        - Open: `https://github.com/circle-ave/onyx/pull/14`
+        - Login: not required
+        - Verify: confirm `Conformance` and `merge state`
+        """
+      }
+    ]
+
+    assert {:error, %{reason: :non_functional_review_url, host: "github.com"}} =
+             ReviewRecipe.prepare(comments)
+  end
+
   test "prepare rejects duplicate active workpads" do
     comments = [
       %{"id" => "first", "body" => "## Codex Workpad\n\n### Demo / Review Recipe"},

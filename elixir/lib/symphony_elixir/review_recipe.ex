@@ -10,6 +10,13 @@ defmodule SymphonyElixir.ReviewRecipe do
     "could not find what you were looking for"
   ]
 
+  @non_functional_review_hosts [
+    "github.com",
+    "linear.app",
+    "atlassian.net",
+    "jira.com"
+  ]
+
   @spec prepare([map()]) :: {:ok, map()} | {:error, map()}
   def prepare(comments) when is_list(comments) do
     active_workpads =
@@ -122,9 +129,31 @@ defmodule SymphonyElixir.ReviewRecipe do
     source = open_line || section
 
     case Regex.run(~r/https?:\/\/[^\s<>)\]]+/, source) do
-      [url] -> {:ok, trim_url(url)}
+      [url] -> validate_functional_review_url(trim_url(url))
       _ -> {:error, %{reason: :missing_review_url}}
     end
+  end
+
+  defp validate_functional_review_url(url) do
+    case URI.parse(url) do
+      %URI{host: host} when is_binary(host) ->
+        if non_functional_review_host?(host) do
+          {:error, %{reason: :non_functional_review_url, host: String.downcase(host), url: url}}
+        else
+          {:ok, url}
+        end
+
+      _ ->
+        {:error, %{reason: :missing_review_url}}
+    end
+  end
+
+  defp non_functional_review_host?(host) do
+    normalized_host = String.downcase(host)
+
+    Enum.any?(@non_functional_review_hosts, fn disallowed ->
+      normalized_host == disallowed or String.ends_with?(normalized_host, ".#{disallowed}")
+    end)
   end
 
   defp extract_claims(section) do
