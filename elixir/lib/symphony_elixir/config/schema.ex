@@ -660,9 +660,9 @@ defmodule SymphonyElixir.Config.Schema do
 
     jira = %{
       settings.jira
-      | site: resolve_optional_string(settings.jira.site, System.get_env("JIRA_SITE")),
-        email: resolve_secret_setting(settings.jira.email, System.get_env("JIRA_EMAIL")),
-        api_token: resolve_secret_setting(settings.jira.api_token, System.get_env("JIRA_API_TOKEN"))
+      | site: resolve_optional_string(settings.jira.site, env_setting(["JIRA_SITE", "JIRA_SITE_URL"])),
+        email: resolve_secret_setting(settings.jira.email, env_setting("JIRA_EMAIL")),
+        api_token: resolve_secret_setting(settings.jira.api_token, env_setting("JIRA_API_TOKEN"))
     }
 
     workspace = %{
@@ -844,6 +844,82 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp normalize_secret_value(_value), do: nil
+
+  defp env_setting(name) when is_binary(name) do
+    env_setting([name])
+  end
+
+  defp env_setting(names) when is_list(names) do
+    names
+    |> Enum.find_value(&system_env_setting/1)
+    |> case do
+      nil -> dotenv_setting(names)
+      value -> value
+    end
+  end
+
+  defp system_env_setting(name) when is_binary(name) do
+    case System.get_env(name) do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp dotenv_setting(names) do
+    dotenv_paths()
+    |> Enum.find_value(fn path ->
+      case File.read(path) do
+        {:ok, content} -> Enum.find_value(names, &dotenv_value(content, &1))
+        {:error, _reason} -> nil
+      end
+    end)
+  end
+
+  defp dotenv_paths do
+    [
+      Path.dirname(SymphonyElixir.Workflow.workflow_file_path()),
+      File.cwd!()
+    ]
+    |> Enum.flat_map(&ancestor_dotenv_paths/1)
+    |> Enum.uniq()
+  end
+
+  defp ancestor_dotenv_paths(path) when is_binary(path) do
+    path
+    |> Path.expand()
+    |> Stream.iterate(&Path.dirname/1)
+    |> Enum.reduce_while([], fn current, acc ->
+      next_acc = [Path.join(current, ".env") | acc]
+
+      if Path.dirname(current) == current do
+        {:halt, next_acc}
+      else
+        {:cont, next_acc}
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+  defp dotenv_value(content, name) when is_binary(content) and is_binary(name) do
+    content
+    |> String.split("\n")
+    |> Enum.find_value(fn line -> parse_dotenv_line(line, name) end)
+  end
+
+  defp parse_dotenv_line(line, name) do
+    case Regex.run(~r/^\s*(?:export\s+)?#{Regex.escape(name)}\s*=\s*(.*)\s*$/, line, capture: :all_but_first) do
+      [raw_value] -> normalize_dotenv_value(raw_value)
+      _ -> nil
+    end
+  end
+
+  defp normalize_dotenv_value(value) do
+    value
+    |> String.trim()
+    |> String.trim("\"")
+    |> String.trim("'")
+    |> normalize_secret_value()
+  end
 
   defp default_turn_sandbox_policy(workspace) do
     %{
