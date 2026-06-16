@@ -54,6 +54,7 @@ codex:
         command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
         description: Architecture, migrations, failed retries, rework, or risky user-facing changes.
   approval_policy: never
+  read_timeout_ms: 30000
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite

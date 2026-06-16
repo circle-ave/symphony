@@ -691,6 +691,32 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp maybe_handle_approval_request(
+         port,
+         "mcpServer/elicitation/request",
+         %{"id" => id, "params" => params} = payload,
+         payload_string,
+         on_message,
+         metadata,
+         _tool_executor,
+         true
+       ) do
+    if mcp_tool_call_approval_elicitation?(params) do
+      send_message(port, %{"id" => id, "result" => %{"action" => "accept", "content" => %{}}})
+
+      emit_message(
+        on_message,
+        :approval_auto_approved,
+        %{payload: payload, raw: payload_string, decision: "accept"},
+        metadata
+      )
+
+      :approved
+    else
+      :input_required
+    end
+  end
+
+  defp maybe_handle_approval_request(
          _port,
          _method,
          _payload,
@@ -846,6 +872,16 @@ defmodule SymphonyElixir.Codex.AppServer do
       metadata
     )
   end
+
+  defp mcp_tool_call_approval_elicitation?(%{
+         "_meta" => %{"codex_approval_kind" => "mcp_tool_call"},
+         "requestedSchema" => %{"properties" => properties}
+       })
+       when is_map(properties) do
+    map_size(properties) == 0
+  end
+
+  defp mcp_tool_call_approval_elicitation?(_params), do: false
 
   defp tool_request_user_input_approval_answers(%{"questions" => questions}) when is_list(questions) do
     answers =
