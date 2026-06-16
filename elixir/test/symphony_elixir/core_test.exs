@@ -38,6 +38,8 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
+    assert config.agent.max_turn_tokens == nil
+    assert config.agent.max_run_tokens == nil
     assert config.agent.roles == %{}
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -64,6 +66,18 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
     assert Config.settings!().agent.max_turns == 5
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_turn_tokens: 0)
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.max_turn_tokens"
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_run_tokens: 0)
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.max_run_tokens"
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_turn_tokens: 90_000, max_run_tokens: 180_000)
+    assert Config.settings!().agent.max_turn_tokens == 90_000
+    assert Config.settings!().agent.max_run_tokens == 180_000
 
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_roles: %{
@@ -620,6 +634,176 @@ defmodule SymphonyElixir.CoreTest do
     assert Process.alive?(agent_pid)
 
     send(agent_pid, :stop)
+  end
+
+  test "turn token budget stops and blocks running agent without retry" do
+    issue_id = "issue-token-turn"
+    issue_identifier = "MT-558"
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_turn_tokens: 1_000, max_run_tokens: 2_000)
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        after
+          5_000 -> :ok
+        end
+      end)
+
+    ref = Process.monitor(agent_pid)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: ref,
+          identifier: issue_identifier,
+          issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+          session_id: "thread-turn-1",
+          started_at: DateTime.utc_now(),
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_stream_window: [],
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          codex_turn_base_total_tokens: 0,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
+          turn_count: 1
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    {:noreply, updated_state} =
+      Orchestrator.handle_info(
+        {:codex_worker_update, issue_id,
+         %{
+           event: :notification,
+           payload: %{
+             "method" => "codex/event/token_count",
+             "params" => %{
+               "msg" => %{
+                 "type" => "token_count",
+                 "info" => %{
+                   "total_token_usage" => %{
+                     "input_tokens" => 1_000,
+                     "output_tokens" => 25,
+                     "total_tokens" => 1_025
+                   }
+                 }
+               }
+             }
+           },
+           timestamp: DateTime.utc_now()
+         }},
+        state
+      )
+
+    refute Map.has_key?(updated_state.running, issue_id)
+    assert updated_state.retry_attempts == %{}
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    assert %{^issue_id => blocked_entry} = updated_state.blocked
+    assert blocked_entry.error == "turn token budget exceeded: total_tokens=1025 limit=1000"
+    assert blocked_entry.tokens.total_tokens == 1_025
+    assert blocked_entry.tokens.current_turn_tokens == 1_025
+    assert updated_state.codex_totals.total_tokens == 1_025
+
+    Process.sleep(20)
+    refute Process.alive?(agent_pid)
+  end
+
+  test "run token budget uses cumulative tokens while turn budget resets per turn" do
+    issue_id = "issue-token-run"
+    issue_identifier = "MT-559"
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_turn_tokens: 1_000, max_run_tokens: 1_500)
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        after
+          5_000 -> :ok
+        end
+      end)
+
+    ref = Process.monitor(agent_pid)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: ref,
+          identifier: issue_identifier,
+          issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+          session_id: "thread-turn-1",
+          started_at: DateTime.utc_now(),
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_stream_window: [],
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 900,
+          codex_turn_base_total_tokens: 0,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 900,
+          turn_count: 1
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    {:noreply, next_turn_state} =
+      Orchestrator.handle_info(
+        {:codex_worker_update, issue_id,
+         %{
+           event: :session_started,
+           session_id: "thread-turn-2",
+           timestamp: DateTime.utc_now()
+         }},
+        state
+      )
+
+    assert get_in(next_turn_state.running, [issue_id, :codex_turn_base_total_tokens]) == 900
+
+    {:noreply, updated_state} =
+      Orchestrator.handle_info(
+        {:codex_worker_update, issue_id,
+         %{
+           event: :notification,
+           payload: %{
+             "method" => "thread/tokenUsage/updated",
+             "params" => %{
+               "tokenUsage" => %{
+                 "total" => %{"inputTokens" => 1_550, "outputTokens" => 51, "totalTokens" => 1_601}
+               }
+             }
+           },
+           timestamp: DateTime.utc_now()
+         }},
+        next_turn_state
+      )
+
+    refute Map.has_key?(updated_state.running, issue_id)
+    assert updated_state.retry_attempts == %{}
+    assert %{^issue_id => blocked_entry} = updated_state.blocked
+    assert blocked_entry.error == "run token budget exceeded: total_tokens=1601 limit=1500"
+    assert blocked_entry.tokens.total_tokens == 1_601
+    assert blocked_entry.tokens.current_turn_tokens == 701
+
+    Process.sleep(20)
+    refute Process.alive?(agent_pid)
   end
 
   test "terminal issue state stops running agent and cleans workspace" do

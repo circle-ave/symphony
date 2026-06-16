@@ -35,13 +35,15 @@ hooks:
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
 agent:
-  max_concurrent_agents: 10
-  max_turns: 20
+  max_concurrent_agents: 6
+  max_turns: 5
+  max_turn_tokens: 90000
+  max_run_tokens: 180000
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
   model_router:
     enabled: true
-    router_command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+    router_command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5-mini"' --config model_reasoning_effort=medium app-server
     default_profile: standard
     profiles:
       fast:
@@ -51,7 +53,7 @@ codex:
         command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
         description: Normal implementation work with moderate ambiguity.
       deep:
-        command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+        command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
         description: Architecture, migrations, failed retries, rework, or risky user-facing changes.
   approval_policy: never
   read_timeout_ms: 30000

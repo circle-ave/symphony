@@ -123,6 +123,8 @@ defmodule SymphonyElixir.TestSupport do
           max_retry_backoff_ms: 300_000,
           cloud_gate_retry_cooldown_ms: 1_800_000,
           local_bench_gate_retry_cooldown_ms: 60_000,
+          max_turn_tokens: nil,
+          max_run_tokens: nil,
           max_concurrent_agents_by_state: %{},
           agent_roles: %{},
           codex_command: "codex app-server",
@@ -169,6 +171,8 @@ defmodule SymphonyElixir.TestSupport do
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     cloud_gate_retry_cooldown_ms = Keyword.get(config, :cloud_gate_retry_cooldown_ms)
     local_bench_gate_retry_cooldown_ms = Keyword.get(config, :local_bench_gate_retry_cooldown_ms)
+    max_turn_tokens = Keyword.get(config, :max_turn_tokens)
+    max_run_tokens = Keyword.get(config, :max_run_tokens)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     agent_roles = Keyword.get(config, :agent_roles)
     codex_command = Keyword.get(config, :codex_command)
@@ -217,6 +221,8 @@ defmodule SymphonyElixir.TestSupport do
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  cloud_gate_retry_cooldown_ms: #{yaml_value(cloud_gate_retry_cooldown_ms)}",
         "  local_bench_gate_retry_cooldown_ms: #{yaml_value(local_bench_gate_retry_cooldown_ms)}",
+        "  max_turn_tokens: #{yaml_value(max_turn_tokens)}",
+        "  max_run_tokens: #{yaml_value(max_run_tokens)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "  roles: #{yaml_value(agent_roles)}",
         "codex:",

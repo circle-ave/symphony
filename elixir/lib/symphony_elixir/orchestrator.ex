@@ -236,9 +236,11 @@ defmodule SymphonyElixir.Orchestrator do
           state
           |> apply_codex_token_delta(token_delta)
           |> apply_codex_rate_limits(update)
+          |> put_running_entry(issue_id, updated_running_entry)
+          |> enforce_token_budgets(issue_id)
 
         notify_dashboard()
-        {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+        {:noreply, state}
     end
   end
 
@@ -1516,6 +1518,7 @@ defmodule SymphonyElixir.Orchestrator do
       last_codex_message: Map.get(running_entry, :last_codex_message),
       last_codex_event: Map.get(running_entry, :last_codex_event),
       last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp),
+      tokens: token_snapshot(running_entry),
       codex_stream_window: Map.get(running_entry, :codex_stream_window, [])
     }
 
@@ -2025,6 +2028,7 @@ defmodule SymphonyElixir.Orchestrator do
             codex_input_tokens: 0,
             codex_output_tokens: 0,
             codex_total_tokens: 0,
+            codex_turn_base_total_tokens: 0,
             codex_last_reported_input_tokens: 0,
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
@@ -3069,6 +3073,7 @@ defmodule SymphonyElixir.Orchestrator do
           codex_input_tokens: metadata.codex_input_tokens,
           codex_output_tokens: metadata.codex_output_tokens,
           codex_total_tokens: metadata.codex_total_tokens,
+          codex_current_turn_tokens: current_turn_tokens(metadata),
           turn_count: Map.get(metadata, :turn_count, 0),
           started_at: metadata.started_at,
           last_codex_timestamp: metadata.last_codex_timestamp,
@@ -3114,6 +3119,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: Map.get(metadata, :last_codex_timestamp),
           last_codex_message: Map.get(metadata, :last_codex_message),
           last_codex_event: Map.get(metadata, :last_codex_event),
+          tokens: Map.get(metadata, :tokens),
           codex_stream_window: Map.get(metadata, :codex_stream_window, [])
         }
       end)
@@ -3611,11 +3617,14 @@ defmodule SymphonyElixir.Orchestrator do
     codex_input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
     codex_output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
     codex_total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+    codex_turn_base_total_tokens = Map.get(running_entry, :codex_turn_base_total_tokens, 0)
     codex_app_server_pid = Map.get(running_entry, :codex_app_server_pid)
+    existing_session_id = Map.get(running_entry, :session_id)
     last_reported_input = Map.get(running_entry, :codex_last_reported_input_tokens, 0)
     last_reported_output = Map.get(running_entry, :codex_last_reported_output_tokens, 0)
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
+    new_turn? = new_turn_started?(existing_session_id, update)
 
     summarized_update = summarize_codex_update(update)
 
@@ -3623,21 +3632,93 @@ defmodule SymphonyElixir.Orchestrator do
       Map.merge(running_entry, %{
         last_codex_timestamp: timestamp,
         last_codex_message: summarized_update,
-        session_id: session_id_for_update(running_entry.session_id, update),
+        session_id: session_id_for_update(existing_session_id, update),
         last_codex_event: event,
         codex_stream_window: append_codex_stream_window(running_entry, summarized_update),
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
         codex_total_tokens: codex_total_tokens + token_delta.total_tokens,
+        codex_turn_base_total_tokens: if(new_turn?, do: codex_total_tokens, else: codex_turn_base_total_tokens),
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
-        turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
+        turn_count: turn_count_for_update(turn_count, existing_session_id, update)
       }),
       token_delta
     }
   end
+
+  defp put_running_entry(%State{running: running} = state, issue_id, running_entry) do
+    %{state | running: Map.put(running, issue_id, running_entry)}
+  end
+
+  defp enforce_token_budgets(%State{} = state, issue_id) when is_binary(issue_id) do
+    case Map.get(state.running, issue_id) do
+      nil ->
+        state
+
+      running_entry ->
+        case token_budget_exceeded(running_entry, Config.settings!().agent) do
+          nil ->
+            state
+
+          %{kind: kind, total_tokens: total_tokens, limit: limit} ->
+            stop_token_budget_exceeded_issue(state, issue_id, running_entry, kind, total_tokens, limit)
+        end
+    end
+  end
+
+  defp enforce_token_budgets(state, _issue_id), do: state
+
+  defp stop_token_budget_exceeded_issue(state, issue_id, running_entry, kind, total_tokens, limit) do
+    identifier = Map.get(running_entry, :identifier, issue_id)
+    session_id = running_entry_session_id(running_entry)
+    kind_label = if(kind == :turn, do: "turn", else: "run")
+    error = "#{kind_label} token budget exceeded: total_tokens=#{total_tokens} limit=#{limit}"
+
+    Logger.warning("Stopping agent for #{kind_label} token guard issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} total_tokens=#{total_tokens} limit=#{limit}")
+
+    state
+    |> record_session_completion_totals(running_entry)
+    |> stop_and_block_issue(issue_id, running_entry, error)
+  end
+
+  defp token_budget_exceeded(running_entry, agent_config) when is_map(running_entry) do
+    run_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+    turn_tokens = current_turn_tokens(running_entry)
+
+    cond do
+      positive_integer?(agent_config.max_turn_tokens) and turn_tokens > agent_config.max_turn_tokens ->
+        %{kind: :turn, total_tokens: turn_tokens, limit: agent_config.max_turn_tokens}
+
+      positive_integer?(agent_config.max_run_tokens) and run_tokens > agent_config.max_run_tokens ->
+        %{kind: :run, total_tokens: run_tokens, limit: agent_config.max_run_tokens}
+
+      true ->
+        nil
+    end
+  end
+
+  defp token_budget_exceeded(_running_entry, _agent_config), do: nil
+
+  defp token_snapshot(running_entry) when is_map(running_entry) do
+    %{
+      input_tokens: Map.get(running_entry, :codex_input_tokens, 0),
+      output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
+      total_tokens: Map.get(running_entry, :codex_total_tokens, 0),
+      current_turn_tokens: current_turn_tokens(running_entry)
+    }
+  end
+
+  defp current_turn_tokens(running_entry) when is_map(running_entry) do
+    total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+    turn_base = Map.get(running_entry, :codex_turn_base_total_tokens, 0)
+
+    max(0, total_tokens - turn_base)
+  end
+
+  defp positive_integer?(value), do: is_integer(value) and value > 0
 
   defp codex_app_server_pid_for_update(_existing, %{codex_app_server_pid: pid})
        when is_binary(pid),
@@ -3656,6 +3737,16 @@ defmodule SymphonyElixir.Orchestrator do
     do: session_id
 
   defp session_id_for_update(existing, _update), do: existing
+
+  defp new_turn_started?(existing_session_id, %{
+         event: :session_started,
+         session_id: session_id
+       })
+       when is_binary(session_id) do
+    session_id != existing_session_id
+  end
+
+  defp new_turn_started?(_existing_session_id, _update), do: false
 
   defp turn_count_for_update(existing_count, existing_session_id, %{
          event: :session_started,
