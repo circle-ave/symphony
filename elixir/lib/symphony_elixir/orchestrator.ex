@@ -666,7 +666,9 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp recoverable_waiting_issue?(%Issue{} = issue, terminal_states) do
-    !issue_blocked_by_non_terminal?(issue, terminal_states) and !waiting_issue_has_blocker_marker?(issue)
+    !issue_blocked_by_non_terminal?(issue, terminal_states) and
+      !waiting_issue_has_blocker_marker?(issue) and
+      !waiting_issue_has_clarification_blocker?(issue)
   end
 
   defp waiting_blocker_refs(issues, terminal_states) when is_list(issues) do
@@ -818,6 +820,24 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp waiting_issue_has_blocker_marker?(_issue), do: false
+
+  defp waiting_issue_has_clarification_blocker?(%Issue{active_workpad_body: body}) when is_binary(body) do
+    case workpad_section(body, "Confusions") do
+      nil -> false
+      section -> String.trim(section) != ""
+    end
+  end
+
+  defp waiting_issue_has_clarification_blocker?(_issue), do: false
+
+  defp workpad_section(body, heading) when is_binary(body) and is_binary(heading) do
+    pattern = ~r/(?:^|\n)###\s+#{Regex.escape(heading)}\s*\n(?<section>.*?)(?=\n###\s+|\z)/s
+
+    case Regex.named_captures(pattern, body) do
+      %{"section" => section} -> section
+      _ -> nil
+    end
+  end
 
   defp recover_waiting_issue(%Issue{id: issue_id, identifier: identifier} = issue)
        when is_binary(issue_id) do

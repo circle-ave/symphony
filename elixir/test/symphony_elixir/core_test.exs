@@ -1302,6 +1302,65 @@ defmodule SymphonyElixir.CoreTest do
     refute_receive {:memory_tracker_comment, "issue-waiting-human-blocker", _body}, 300
   end
 
+  test "waiting issues with active workpad confusions stay in Waiting" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-waiting-confusions-#{System.unique_integer([:positive])}"
+      )
+
+    issue = %Issue{
+      id: "issue-waiting-confusions",
+      identifier: "MT-706",
+      title: "Waiting for review details",
+      state: "Waiting",
+      blocked_by: [],
+      active_workpad_body: """
+      ## Codex Workpad
+
+      ### Status
+      Waiting for reviewer-accessible demo details.
+
+      ### Confusions
+      - Missing exact no-setup `Open:` URL.
+      - Missing reviewer login details if auth is required.
+
+      ### Demo / Review Recipe
+      No reviewer-accessible demo can be derived yet.
+      """
+    }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: test_root,
+      tracker_active_states: ["Rework", "In Progress"],
+      tracker_waiting_state: "Waiting",
+      poll_interval_ms: 30_000
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    try do
+      assert {:ok, state} =
+               Orchestrator.run_waiting_blocker_monitor_for_test(%Orchestrator.State{
+                 running: %{},
+                 claimed: MapSet.new(),
+                 blocked: %{},
+                 retry_attempts: %{},
+                 max_concurrent_agents: 2,
+                 poll_interval_ms: 30_000
+               })
+
+      assert state.waiting_blocker_monitor_status.scanned_count == 1
+      assert state.waiting_blocker_monitor_status.recovered_count == 0
+      refute_receive {:memory_tracker_state_update, "issue-waiting-confusions", _state}, 300
+      refute_receive {:memory_tracker_comment, "issue-waiting-confusions", _body}, 300
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "active issues with live resource gate locks park before dispatch" do
     test_root =
       Path.join(
