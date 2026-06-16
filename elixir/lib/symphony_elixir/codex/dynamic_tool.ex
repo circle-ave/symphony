@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.{Config, Linear.Client, Linear.ProjectScope, Tracker}
+  alias SymphonyElixir.{Config, Linear.Client, Linear.ProjectScope, ReviewRecipe, Tracker}
   alias SymphonyElixir.Jira.Client, as: JiraClient
 
   @linear_graphql_tool "linear_graphql"
@@ -821,6 +821,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp validate_review_ready_flags(proof) do
     with :ok <- require_true_proof_fields(proof, required_review_ready_fields()),
+         :ok <- validate_review_recipe_access(proof),
          :ok <- require_true_proof_fields(proof, user_facing_review_ready_fields(proof)) do
       validate_review_branch(proof)
     end
@@ -830,6 +831,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     [
       "reviewReadinessCheckPassed",
       "workpadCompleted",
+      "reviewRecipeAccessible",
       "mainBranchReviewed",
       "pullRequestMerged",
       "targetContainsMergedPr",
@@ -854,6 +856,34 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         {:halt, missing_proof_field(proof, field)}
       end
     end)
+  end
+
+  defp validate_review_recipe_access(proof) do
+    case proof_value(proof, "reviewRecipeUrl") do
+      url when is_binary(url) and url != "" ->
+        case ReviewRecipe.validate_accessible_url(url) do
+          {:ok, _url} ->
+            :ok
+
+          {:error, details} ->
+            details =
+              details
+              |> stringify_keys()
+              |> Map.put("field", "reviewRecipeUrl")
+              |> Map.put("path", proof["_path"])
+
+            review_transition_error(
+              "Blocked review transition: reviewRecipeUrl is not reviewer-accessible.",
+              details
+            )
+        end
+
+      _ ->
+        review_transition_error("Blocked review transition: readiness proof is missing an accessible reviewRecipeUrl.", %{
+          "field" => "reviewRecipeUrl",
+          "path" => proof["_path"]
+        })
+    end
   end
 
   defp validate_review_branch(proof) do
@@ -1090,6 +1120,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       {:ok, value} -> value
       :error -> map_value(proof, Macro.underscore(key))
     end
+  end
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn {key, value} -> {to_string(key), value} end)
   end
 
   defp fetch_map_value(map, key) when is_map(map) and is_binary(key) do

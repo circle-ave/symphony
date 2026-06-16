@@ -3049,6 +3049,8 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "move the issue to `Waiting`"
     assert prompt =~ "### Scope Confidence"
     assert prompt =~ "PR feedback sweep before `Human Review`"
+    assert prompt =~ "requires no reviewer setup"
+    assert prompt =~ "reviewRecipeAccessible: true"
     refute prompt =~ "## Landing Packet"
     refute prompt =~ "Do not call `gh pr merge` directly"
     assert prompt =~ "Continuation context:"
@@ -3102,6 +3104,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "## Comment Reply Packet"
     assert prompt =~ "update the one active `## Codex Workpad`"
     assert prompt =~ "rewrite `Demo / Review Recipe`"
+    assert prompt =~ "exact reviewer-reachable app/runtime/API/dashboard URL"
     refute prompt =~ "## Execution Packet"
     refute prompt =~ "Run the Scope Confidence Gate"
   end

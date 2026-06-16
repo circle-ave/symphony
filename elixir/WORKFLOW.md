@@ -136,6 +136,7 @@ The issue is terminal. Do not modify anything. Report that no action was require
 - Poll for human/bot review updates and GitHub PR comments.
 - If processing review, use exactly one active `## Codex Workpad`, extract `Demo / Review Recipe`, run the visible browser review path, check console warnings/errors, and report the result for the reviewer.
 - Reject review recipes whose primary `Open:` target is a PR, source diff, CI run, Linear issue, Jira issue, or other project tracker. Those links are validation evidence, not a functional demo.
+- Reject review recipes that require reviewer setup, local services, localhost/loopback URLs, unpublished branches, seed scripts, or guessing. `Open:` must be an exact reviewer-reachable app/runtime/API/dashboard URL, and required login/data details must be in the workpad.
 - Treat login redirects, 404s, stale fixtures, and missing credentials as review failures/blockers.
 - If feedback requires code changes, move the issue to `Rework` and follow the rework packet.
 - The human reviewer owns final acceptance and lane decisions.
@@ -146,7 +147,7 @@ The issue is terminal. Do not modify anything. Report that no action was require
 
 - Handle only the latest actionable human comment. Do not replay the normal implementation workflow.
 - If the comment asks for review recipe, demo recipe, validation-note, or workpad repair only, update the one active `## Codex Workpad` and reply with the outcome. Do not edit code, rerun full validation, republish the PR, inspect Jira attachments, or dump browser/source responses unless the comment specifically requires fresh evidence.
-- For review recipe repairs, preserve valid implementation/validation history, move PR/check/source metadata to `Validation` or `Notes`, and rewrite `Demo / Review Recipe` so `Open:` is an app/runtime/API/dashboard target and `Verify:` states observable ticket behavior.
+- For review recipe repairs, preserve valid implementation/validation history, move PR/check/source metadata to `Validation` or `Notes`, and rewrite `Demo / Review Recipe` so `Open:` is an exact reviewer-reachable app/runtime/API/dashboard URL, `Login:` includes credentials when needed, and `Verify:` states observable ticket behavior.
 - If no functional demo can be derived from the issue, active workpad, existing validation evidence, or directly linked artifacts, record the missing information in `Confusions` and move the issue to `Waiting` instead of guessing.
 - If the comment requires code changes, move the issue to `Rework` before changing files, then stop this reply turn.
 - Include a concise reply to the latest comment and append the hidden Symphony comment marker.
@@ -197,7 +198,7 @@ Execution loop:
 - Implement against the workpad checklist. Keep it current after meaningful milestones.
 - Treat ticket `Validation`, `Test Plan`, or `Testing` sections as mandatory.
 - For user-facing work, required acceptance includes an observe-only browser pass against the final review target; do not remount UI, patch app state, force success with internals, or count self-healing helpers as acceptance.
-- Every completed issue needs a functional `Demo / Review Recipe`. For backend, data, analytics, pipeline, or workflow work, use an app/runtime route, review environment, API endpoint, CLI command, or dashboard that demonstrates the ticket behavior. Do not use the PR, source diff, CI run, Linear issue, or Jira issue as the primary `Open:` target.
+- Every completed issue needs a functional `Demo / Review Recipe` that requires no reviewer setup. For backend, data, analytics, pipeline, or workflow work, publish or identify the app/runtime route, review environment, API endpoint, CLI command output artifact, or dashboard that demonstrates the ticket behavior. Do not use the PR, source diff, CI run, Linear issue, Jira issue, localhost, or an unpublished branch as the primary `Open:` target.
 - Temporary local proof edits are allowed only for verification and must be reverted before commit.
 - Before each push, rerun the required validation and fix failures.
 - Merge latest `origin/main`, resolve conflicts, rerun checks, push, create/update PR, attach PR URL to Linear, and ensure the PR has label `symphony`.
@@ -211,9 +212,10 @@ Completion bar before `Human Review`:
 - Workpad plan, acceptance criteria, and validation exactly match completed work.
 - `Scope Confidence` is `clear`, with no unresolved `Confusions`.
 - Required tests/validation are green for the latest commit.
-- User-facing work has a passing independent acceptance review and current `Demo / Review Recipe`; include login credentials when required, otherwise `Login: not required`.
-- Non-user-facing work may mark independent browser acceptance as not applicable, but its `Demo / Review Recipe` must still demonstrate runtime/app behavior and must not be a PR/status-check inspection recipe.
+- User-facing work has a passing independent acceptance review and current no-setup `Demo / Review Recipe`; include login credentials when required, otherwise `Login: not required`.
+- Non-user-facing work may mark independent browser acceptance as not applicable, but its `Demo / Review Recipe` must still demonstrate runtime/app behavior through an exact reviewer-reachable URL or artifact and must not be a PR/status-check/local-setup inspection recipe.
 - PR checks are green, branch is pushed, PR is linked, and PR metadata is present.
+- Review readiness proof includes `reviewRecipeAccessible: true` and `reviewRecipeUrl` matching the workpad `Open:` target.
 - Only then move to `Human Review`.
 {% endif %}
 
@@ -256,7 +258,7 @@ Workpad skeleton:
 - Evidence: `<screenshot/DOM/console/network/realtime observations>`
 
 ### Demo / Review Recipe
-- Open: `<final app/runtime/API/dashboard review URL; never a PR, source diff, CI run, Linear issue, or Jira issue>`
+- Open: `<exact final app/runtime/API/dashboard review URL; no reviewer setup; never localhost, PR, source diff, CI run, Linear issue, or Jira issue>`
 - Login: `<not required, or required>`
 - Username: `<required only when login is required>`
 - Password: `<required only when login is required>`

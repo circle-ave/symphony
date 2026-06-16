@@ -17,6 +17,12 @@ defmodule SymphonyElixir.ReviewRecipe do
     "jira.com"
   ]
 
+  @local_review_hosts [
+    "localhost",
+    "0.0.0.0",
+    "::1"
+  ]
+
   @spec prepare([map()]) :: {:ok, map()} | {:error, map()}
   def prepare(comments) when is_list(comments) do
     active_workpads =
@@ -88,6 +94,21 @@ defmodule SymphonyElixir.ReviewRecipe do
     }
   end
 
+  @spec validate_accessible_url(term()) :: {:ok, String.t()} | {:error, map()}
+  def validate_accessible_url(url) when is_binary(url) do
+    url = url |> String.trim() |> trim_url()
+
+    case URI.parse(url) do
+      %URI{host: host} when is_binary(host) ->
+        validate_review_host(host, url)
+
+      _ ->
+        {:error, %{reason: :missing_review_url}}
+    end
+  end
+
+  def validate_accessible_url(_url), do: {:error, %{reason: :missing_review_url}}
+
   defp active_workpad?(comment) do
     body = field(comment, "body")
 
@@ -129,22 +150,21 @@ defmodule SymphonyElixir.ReviewRecipe do
     source = open_line || section
 
     case Regex.run(~r/https?:\/\/[^\s<>)\]]+/, source) do
-      [url] -> validate_functional_review_url(trim_url(url))
+      [url] -> validate_accessible_url(url)
       _ -> {:error, %{reason: :missing_review_url}}
     end
   end
 
-  defp validate_functional_review_url(url) do
-    case URI.parse(url) do
-      %URI{host: host} when is_binary(host) ->
-        if non_functional_review_host?(host) do
-          {:error, %{reason: :non_functional_review_url, host: String.downcase(host), url: url}}
-        else
-          {:ok, url}
-        end
+  defp validate_review_host(host, url) do
+    cond do
+      local_review_host?(host) ->
+        {:error, %{reason: :local_review_url, host: String.downcase(host), url: url}}
 
-      _ ->
-        {:error, %{reason: :missing_review_url}}
+      non_functional_review_host?(host) ->
+        {:error, %{reason: :non_functional_review_url, host: String.downcase(host), url: url}}
+
+      true ->
+        {:ok, url}
     end
   end
 
@@ -154,6 +174,12 @@ defmodule SymphonyElixir.ReviewRecipe do
     Enum.any?(@non_functional_review_hosts, fn disallowed ->
       normalized_host == disallowed or String.ends_with?(normalized_host, ".#{disallowed}")
     end)
+  end
+
+  defp local_review_host?(host) do
+    normalized_host = String.downcase(host)
+
+    normalized_host in @local_review_hosts or String.starts_with?(normalized_host, "127.")
   end
 
   defp extract_claims(section) do

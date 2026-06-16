@@ -424,6 +424,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
         "functionalReviewRecipePassed" => true,
+        "reviewRecipeAccessible" => true,
+        "reviewRecipeUrl" => "https://review.example.test/MT-1",
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
         "targetContainsMergedPr" => true,
@@ -469,6 +471,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
         "functionalReviewRecipePassed" => true,
+        "reviewRecipeAccessible" => true,
+        "reviewRecipeUrl" => "https://review.example.test/MT-1",
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
         "targetContainsMergedPr" => true,
@@ -520,6 +524,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
         "functionalReviewRecipePassed" => true,
+        "reviewRecipeAccessible" => true,
+        "reviewRecipeUrl" => "https://review.example.test/MT-1",
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
         "targetContainsMergedPr" => true,
@@ -564,6 +570,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
         "functionalReviewRecipePassed" => true,
+        "reviewRecipeAccessible" => true,
+        "reviewRecipeUrl" => "https://review.example.test/MT-1",
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
         "targetContainsMergedPr" => true,
@@ -609,6 +617,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
         "functionalReviewRecipePassed" => true,
+        "reviewRecipeAccessible" => true,
+        "reviewRecipeUrl" => "https://review.example.test/MT-1",
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
         "targetContainsMergedPr" => true,
@@ -658,6 +668,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
         "functionalReviewRecipePassed" => true,
+        "reviewRecipeAccessible" => true,
+        "reviewRecipeUrl" => "https://review.example.test/MT-1",
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
         "targetContainsMergedPr" => true,
@@ -739,6 +751,108 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     end)
   end
 
+  test "linear_graphql blocks guarded review updates when review URL is local-only" do
+    test_pid = self()
+
+    with_guarded_workspace(fn workspace ->
+      write_review_ready_proof!(workspace, %{
+        "schema" => "symphony.review-ready.v1",
+        "issue" => "MT-1",
+        "workspaceHead" => "head-123",
+        "reviewReadinessCheckPassed" => true,
+        "workpadCompleted" => true,
+        "reviewRecipeAccessible" => true,
+        "reviewRecipeUrl" => "http://localhost:3000/review/MT-1",
+        "functionalReviewRecipePassed" => true,
+        "mainBranchReviewed" => true,
+        "pullRequestMerged" => true,
+        "targetContainsMergedPr" => true,
+        "reviewBranch" => "main",
+        "validationPassed" => true,
+        "deliverableReviewPassed" => true,
+        "screenshotArtifactVerified" => true
+      })
+
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
+          git_head: "head-123",
+          linear_client: review_state_guard_client(test_pid, "In Review")
+        )
+
+      assert response["success"] == false
+
+      payload = Jason.decode!(response["output"])
+
+      assert payload["error"]["message"] ==
+               "Blocked review transition: reviewRecipeUrl is not reviewer-accessible."
+
+      assert payload["error"]["details"]["reason"] == "local_review_url"
+      assert payload["error"]["details"]["field"] == "reviewRecipeUrl"
+      refute_received {:linear_client_called, :state_update, _variables}
+    end)
+  end
+
+  test "linear_graphql blocks guarded review updates when review URL is missing" do
+    test_pid = self()
+
+    with_guarded_workspace(fn workspace ->
+      write_review_ready_proof!(workspace, %{
+        "schema" => "symphony.review-ready.v1",
+        "issue" => "MT-1",
+        "workspaceHead" => "head-123",
+        "reviewReadinessCheckPassed" => true,
+        "workpadCompleted" => true,
+        "reviewRecipeAccessible" => true,
+        "functionalReviewRecipePassed" => true,
+        "mainBranchReviewed" => true,
+        "pullRequestMerged" => true,
+        "targetContainsMergedPr" => true,
+        "reviewBranch" => "main",
+        "validationPassed" => true,
+        "deliverableReviewPassed" => true,
+        "screenshotArtifactVerified" => true
+      })
+
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
+          git_head: "head-123",
+          linear_client: review_state_guard_client(test_pid, "In Review")
+        )
+
+      assert response["success"] == false
+
+      payload = Jason.decode!(response["output"])
+
+      assert payload["error"]["message"] ==
+               "Blocked review transition: readiness proof is missing an accessible reviewRecipeUrl."
+
+      assert payload["error"]["details"]["field"] == "reviewRecipeUrl"
+      refute_received {:linear_client_called, :state_update, _variables}
+    end)
+  end
+
   test "linear_graphql blocks guarded review updates when proof lacks functional recipe proof" do
     test_pid = self()
 
@@ -749,6 +863,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
         "workpadCompleted" => true,
+        "reviewRecipeAccessible" => true,
+        "reviewRecipeUrl" => "https://review.example.test/MT-1",
         "mainBranchReviewed" => true,
         "pullRequestMerged" => true,
         "targetContainsMergedPr" => true,

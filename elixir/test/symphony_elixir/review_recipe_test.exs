@@ -104,6 +104,26 @@ defmodule SymphonyElixir.ReviewRecipeTest do
              ReviewRecipe.prepare(comments)
   end
 
+  test "prepare rejects localhost URLs as reviewer-inaccessible" do
+    comments = [
+      %{
+        "id" => "current-workpad",
+        "body" => """
+        ## Codex Workpad
+
+        ### Demo / Review Recipe
+
+        - Open: `http://localhost:3000/api/analytics`
+        - Login: not required
+        - Verify: confirm `analytics events`
+        """
+      }
+    ]
+
+    assert {:error, %{reason: :local_review_url, host: "localhost"}} =
+             ReviewRecipe.prepare(comments)
+  end
+
   test "prepare rejects duplicate active workpads" do
     comments = [
       %{"id" => "first", "body" => "## Codex Workpad\n\n### Demo / Review Recipe"},
