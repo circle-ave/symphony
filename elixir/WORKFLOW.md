@@ -84,7 +84,8 @@ No description provided.
 {% endif %}
 
 Core rules:
-- This is unattended orchestration. Never ask a human to perform follow-up actions.
+- This is unattended orchestration. Never ask a human to perform repo, validation, deploy, or review actions.
+- Clarification is allowed only by parking the issue: unresolved product, scope, acceptance, or target-surface ambiguity must be recorded in the workpad and the issue must be moved to `Waiting`, not guessed through implementation.
 - Work only in the provided repository copy.
 - Linear access is required through Linear MCP or `linear_graphql`; if unavailable, stop with a blocker.
 - Use exactly one active `## Codex Workpad` comment as the progress source of truth.
@@ -150,11 +151,19 @@ Startup order:
 1. Fetch the current issue state.
 2. If `Todo`, immediately move to `In Progress`.
 3. Find/create one active `## Codex Workpad`; ignore resolved comments.
-4. Reconcile existing checklist state before new edits.
+4. Reconcile existing checklist state against the issue body, all active human comments, and linked PR/review context before new edits. Existing workpad acceptance criteria are evidence, not authority.
 5. Record environment stamp as `<host>:<abs-workdir>@<short-sha>`.
-6. Add/update `Plan`, `Acceptance Criteria`, `Validation`, `Demo / Review Recipe`, and `Notes`.
-7. Capture reproduction proof before code changes.
-8. Run the `pull` skill before edits and record merge source, result, and HEAD.
+6. Add/update `Scope Confidence`, `Plan`, `Acceptance Criteria`, `Validation`, `Demo / Review Recipe`, `Notes`, and `Confusions`.
+7. Run the Scope Confidence Gate before code changes.
+8. Capture reproduction proof before code changes.
+9. Run the `pull` skill before edits and record merge source, result, and HEAD.
+
+Scope Confidence Gate:
+- Restate the intended user-facing workflow, target users, target surfaces/modules, and acceptance criteria using only ticket text, active human comments, and directly linked artifacts.
+- Mark `Scope Confidence: clear` only when one implementation path is strongly supported and testable.
+- Mark `Scope Confidence: blocked` when the ticket supports materially different product interpretations, target surfaces/modules are unclear, acceptance cannot be verified, an existing workpad narrowed scope beyond the ticket, or implementation would choose between product definitions.
+- If blocked, do not edit code, create branches, open PRs, or move toward review. Update the workpad `Confusions` with the minimal concrete questions, explain the impact, and move the issue to `Waiting`.
+- When resuming a ticket, challenge the current workpad against the original issue and human comments before trusting checked boxes or prior acceptance criteria.
 
 Execution loop:
 - Implement against the workpad checklist. Keep it current after meaningful milestones.
@@ -171,6 +180,7 @@ PR feedback sweep before `Human Review`:
 
 Completion bar before `Human Review`:
 - Workpad plan, acceptance criteria, and validation exactly match completed work.
+- `Scope Confidence` is `clear`, with no unresolved `Confusions`.
 - Required tests/validation are green for the latest commit.
 - User-facing work has a passing independent acceptance review and current `Demo / Review Recipe`; include login credentials when required, otherwise `Login: not required`.
 - PR checks are green, branch is pushed, PR is linked, and PR metadata is present.
@@ -179,6 +189,7 @@ Completion bar before `Human Review`:
 
 Blocked-access packet:
 - Use only for missing required tools/auth/permissions after documented fallbacks.
+- Product, scope, acceptance, and target-surface ambiguity are not access blockers; use the Scope Confidence Gate and move the issue to `Waiting`.
 - GitHub access is not a blocker by default; try alternate auth/remote/connector fallbacks first.
 - If blocked by non-GitHub access, record missing item, impact, and exact unblock action in the workpad, then move to `Human Review`.
 
@@ -196,6 +207,12 @@ Workpad skeleton:
 ### Plan
 - [ ] 1\. Parent task
   - [ ] 1.1 Child task
+
+### Scope Confidence
+- Verdict: `<clear/blocked>`
+- Intended workflow: `<who does what and where>`
+- Target surfaces/modules: `<specific surfaces/modules, or blocked>`
+- Acceptance source: `<ticket/comment/artifact evidence>`
 
 ### Acceptance Criteria
 - [ ] Criterion
@@ -219,5 +236,5 @@ Workpad skeleton:
 - <timestamped progress notes>
 
 ### Confusions
-- <only include when useful>
+- <unresolved questions; if any remain, issue belongs in Waiting>
 ````
