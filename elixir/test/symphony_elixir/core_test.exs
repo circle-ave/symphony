@@ -571,6 +571,57 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "waiting issue state lets running agent finish final writes" do
+    issue_id = "issue-waiting"
+    issue_identifier = "MT-557"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: ["Todo", "In Progress", "In Review"],
+      tracker_waiting_state: "Waiting",
+      tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"]
+    )
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: issue_identifier,
+          issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: issue_identifier,
+      state: "Waiting",
+      title: "Parked",
+      description: "Agent parked issue after scope gate",
+      labels: []
+    }
+
+    updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+    assert %{^issue_id => running_entry} = updated_state.running
+    assert running_entry.issue.state == "Waiting"
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    assert Process.alive?(agent_pid)
+
+    send(agent_pid, :stop)
+  end
+
   test "terminal issue state stops running agent and cleans workspace" do
     test_root =
       Path.join(

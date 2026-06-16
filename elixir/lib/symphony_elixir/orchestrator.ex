@@ -1181,6 +1181,11 @@ defmodule SymphonyElixir.Orchestrator do
       active_issue_state?(issue.state, active_states) ->
         refresh_running_issue_state(state, issue)
 
+      waiting_issue_state?(issue.state) ->
+        Logger.info("Issue moved to waiting state: #{issue_context(issue)} state=#{issue.state}; allowing active agent turn to finish")
+
+        refresh_running_issue_state(state, issue)
+
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
@@ -1914,6 +1919,18 @@ defmodule SymphonyElixir.Orchestrator do
   defp active_issue_state?(state_name, active_states) when is_binary(state_name) do
     MapSet.member?(active_states, normalize_issue_state(state_name))
   end
+
+  defp waiting_issue_state?(state_name) when is_binary(state_name) do
+    case configured_waiting_state() do
+      waiting_state when is_binary(waiting_state) ->
+        normalize_issue_state(state_name) == normalize_issue_state(waiting_state)
+
+      _ ->
+        false
+    end
+  end
+
+  defp waiting_issue_state?(_state_name), do: false
 
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     String.downcase(String.trim(state_name))
