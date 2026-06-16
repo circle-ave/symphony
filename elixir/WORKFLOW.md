@@ -14,6 +14,10 @@ tracker:
     - Canceled
     - Duplicate
     - Done
+jira:
+  site: $JIRA_SITE
+  email: $JIRA_EMAIL
+  api_token: $JIRA_API_TOKEN
 polling:
   interval_ms: 30000
 workspace:
@@ -96,6 +100,7 @@ Core rules:
 - Clarification is allowed only by parking the issue: unresolved product, scope, acceptance, or target-surface ambiguity must be recorded in the workpad and the issue must be moved to `Waiting`, not guessed through implementation.
 - Work only in the provided repository copy.
 - Linear access is required through Linear MCP or `linear_graphql`; if unavailable, stop with a blocker.
+- If the issue or latest human comment references a Jira browse link or imported Jira attachment note, call `jira_issue_attachments` before deciding scope or implementing. Use the downloaded local attachment paths as source evidence.
 - Use exactly one active `## Codex Workpad` comment as the progress source of truth.
 - Keep final replies to completed actions and blockers only. No user next steps.
 - Move lanes only as specified here.

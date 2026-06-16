@@ -462,6 +462,32 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.settings!().tracker.assignee == env_assignee
   end
 
+  test "jira auth resolves from JIRA env vars" do
+    previous_jira_site = System.get_env("JIRA_SITE")
+    previous_jira_email = System.get_env("JIRA_EMAIL")
+    previous_jira_api_token = System.get_env("JIRA_API_TOKEN")
+
+    on_exit(fn ->
+      restore_env("JIRA_SITE", previous_jira_site)
+      restore_env("JIRA_EMAIL", previous_jira_email)
+      restore_env("JIRA_API_TOKEN", previous_jira_api_token)
+    end)
+
+    System.put_env("JIRA_SITE", "https://circleavenue.atlassian.net")
+    System.put_env("JIRA_EMAIL", "agent@example.com")
+    System.put_env("JIRA_API_TOKEN", "jira-token")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      jira_site: nil,
+      jira_email: nil,
+      jira_api_token: nil
+    )
+
+    assert Config.settings!().jira.site == "https://circleavenue.atlassian.net"
+    assert Config.settings!().jira.email == "agent@example.com"
+    assert Config.settings!().jira.api_token == "jira-token"
+  end
+
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
     original_workflow_path = Workflow.workflow_file_path()
 

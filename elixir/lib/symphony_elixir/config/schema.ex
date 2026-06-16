@@ -113,6 +113,26 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Jira do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+
+    embedded_schema do
+      field(:site, :string)
+      field(:email, :string)
+      field(:api_token, :string)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:site, :email, :api_token], empty_values: [])
+    end
+  end
+
   defmodule Workspace do
     @moduledoc false
     use Ecto.Schema
@@ -419,6 +439,7 @@ defmodule SymphonyElixir.Config.Schema do
   embedded_schema do
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:jira, Jira, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:repositories, Repositories, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
@@ -611,6 +632,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast(attrs, [])
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
+    |> cast_embed(:jira, with: &Jira.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
     |> cast_embed(:repositories, with: &Repositories.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
@@ -636,6 +658,13 @@ defmodule SymphonyElixir.Config.Schema do
       }
       |> merge_selected_repository_tracker(repositories)
 
+    jira = %{
+      settings.jira
+      | site: resolve_optional_string(settings.jira.site, System.get_env("JIRA_SITE")),
+        email: resolve_secret_setting(settings.jira.email, System.get_env("JIRA_EMAIL")),
+        api_token: resolve_secret_setting(settings.jira.api_token, System.get_env("JIRA_API_TOKEN"))
+    }
+
     workspace = %{
       settings.workspace
       | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "symphony_workspaces"))
@@ -648,7 +677,7 @@ defmodule SymphonyElixir.Config.Schema do
         model_router: normalize_optional_map(settings.codex.model_router) || %{}
     }
 
-    %{settings | tracker: tracker, workspace: workspace, repositories: repositories, codex: codex}
+    %{settings | tracker: tracker, jira: jira, workspace: workspace, repositories: repositories, codex: codex}
   end
 
   defp finalize_repositories(%Repositories{} = repositories) do
@@ -754,6 +783,14 @@ defmodule SymphonyElixir.Config.Schema do
   defp resolve_optional_string(value) when is_binary(value) do
     value
     |> resolve_env_value(nil)
+    |> normalize_optional_string()
+  end
+
+  defp resolve_optional_string(nil, fallback), do: normalize_optional_string(fallback)
+
+  defp resolve_optional_string(value, fallback) when is_binary(value) do
+    value
+    |> resolve_env_value(fallback)
     |> normalize_optional_string()
   end
 

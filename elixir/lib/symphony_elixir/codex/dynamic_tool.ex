@@ -4,10 +4,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   """
 
   alias SymphonyElixir.{Config, Linear.Client}
+  alias SymphonyElixir.Jira.Client, as: JiraClient
 
   @linear_graphql_tool "linear_graphql"
+  @jira_issue_attachments_tool "jira_issue_attachments"
   @linear_graphql_description """
   Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth.
+  """
+  @jira_issue_attachments_description """
+  Fetch Jira issue attachment metadata and download matching attachments into the current workspace using Symphony's configured Jira auth.
   """
   @linear_graphql_input_schema %{
     "type" => "object",
@@ -22,6 +27,25 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "type" => ["object", "null"],
         "description" => "Optional GraphQL variables object.",
         "additionalProperties" => true
+      }
+    }
+  }
+  @jira_issue_attachments_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["issue"],
+    "properties" => %{
+      "issue" => %{
+        "type" => "string",
+        "description" => "Jira issue key or browse URL, for example TP-24 or https://example.atlassian.net/browse/TP-24."
+      },
+      "filename_contains" => %{
+        "type" => ["string", "null"],
+        "description" => "Optional case-insensitive filename filter."
+      },
+      "download" => %{
+        "type" => "boolean",
+        "description" => "Whether to download matching attachments into .symphony/jira-attachments. Defaults to true."
       }
     }
   }
@@ -93,6 +117,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       @linear_graphql_tool ->
         execute_linear_graphql(arguments, opts)
 
+      @jira_issue_attachments_tool ->
+        execute_jira_issue_attachments(arguments, opts)
+
       other ->
         failure_response(%{
           "error" => %{
@@ -110,6 +137,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "name" => @linear_graphql_tool,
         "description" => @linear_graphql_description,
         "inputSchema" => @linear_graphql_input_schema
+      },
+      %{
+        "name" => @jira_issue_attachments_tool,
+        "description" => @jira_issue_attachments_description,
+        "inputSchema" => @jira_issue_attachments_input_schema
       }
     ]
   end
@@ -124,6 +156,18 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     else
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp execute_jira_issue_attachments(arguments, opts) do
+    jira_client = Keyword.get(opts, :jira_client, &JiraClient.issue_attachments/2)
+
+    with {:ok, params} <- normalize_jira_issue_attachments_arguments(arguments),
+         {:ok, response} <- jira_client.(params, opts) do
+      dynamic_tool_response(true, encode_payload(response))
+    else
+      {:error, reason} ->
+        failure_response(jira_tool_error_payload(reason))
     end
   end
 
@@ -151,6 +195,64 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp normalize_linear_graphql_arguments(_arguments), do: {:error, :invalid_arguments}
+
+  defp normalize_jira_issue_attachments_arguments(arguments) when is_binary(arguments) do
+    normalize_jira_issue_attachments_arguments(%{"issue" => arguments})
+  end
+
+  defp normalize_jira_issue_attachments_arguments(arguments) when is_map(arguments) do
+    with {:ok, issue} <- normalize_jira_issue(arguments),
+         {:ok, filename_contains} <- normalize_optional_jira_string(arguments, "filename_contains"),
+         {:ok, download} <- normalize_optional_jira_boolean(arguments, "download", true) do
+      params =
+        %{
+          "issue" => issue,
+          "filename_contains" => filename_contains,
+          "download" => download
+        }
+        |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+        |> Map.new()
+
+      {:ok, params}
+    end
+  end
+
+  defp normalize_jira_issue_attachments_arguments(_arguments), do: {:error, :invalid_jira_arguments}
+
+  defp normalize_jira_issue(arguments) do
+    issue = Map.get(arguments, "issue") || Map.get(arguments, :issue)
+
+    case issue do
+      issue when is_binary(issue) ->
+        case String.trim(issue) do
+          "" -> {:error, :missing_jira_issue}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _ ->
+        {:error, :missing_jira_issue}
+    end
+  end
+
+  defp normalize_optional_jira_string(arguments, key) do
+    value = Map.get(arguments, key) || Map.get(arguments, String.to_atom(key))
+
+    case value do
+      nil -> {:ok, nil}
+      value when is_binary(value) -> {:ok, String.trim(value)}
+      _ -> {:error, {:invalid_jira_argument, key}}
+    end
+  end
+
+  defp normalize_optional_jira_boolean(arguments, key, default) do
+    value = Map.get(arguments, key) || Map.get(arguments, String.to_atom(key))
+
+    case value do
+      nil -> {:ok, default}
+      value when is_boolean(value) -> {:ok, value}
+      _ -> {:error, {:invalid_jira_argument, key}}
+    end
+  end
 
   defp authorize_linear_graphql(query, variables, opts, linear_client) do
     with :ok <- authorize_linear_mutation_scope(query, variables, linear_client) do
@@ -1024,6 +1126,83 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{
       "error" => %{
         "message" => "Linear GraphQL tool execution failed.",
+        "reason" => inspect(reason)
+      }
+    }
+  end
+
+  defp jira_tool_error_payload(:missing_jira_issue) do
+    %{
+      "error" => %{
+        "message" => "`jira_issue_attachments` requires a Jira issue key or browse URL in `issue`."
+      }
+    }
+  end
+
+  defp jira_tool_error_payload(:invalid_jira_arguments) do
+    %{
+      "error" => %{
+        "message" => "`jira_issue_attachments` expects an object with `issue`, optional `filename_contains`, and optional `download`."
+      }
+    }
+  end
+
+  defp jira_tool_error_payload({:invalid_jira_argument, key}) do
+    %{
+      "error" => %{
+        "message" => "`jira_issue_attachments.#{key}` has an invalid type."
+      }
+    }
+  end
+
+  defp jira_tool_error_payload(:missing_jira_auth) do
+    %{
+      "error" => %{
+        "message" => "Symphony is missing Jira auth. Set `jira.email` and `jira.api_token` in `WORKFLOW.md` or export `JIRA_EMAIL` and `JIRA_API_TOKEN`."
+      }
+    }
+  end
+
+  defp jira_tool_error_payload(:missing_jira_site) do
+    %{
+      "error" => %{
+        "message" => "Symphony is missing Jira site. Pass a Jira browse URL or set `jira.site` in `WORKFLOW.md` / `JIRA_SITE`."
+      }
+    }
+  end
+
+  defp jira_tool_error_payload({:jira_api_status, status}) do
+    %{
+      "error" => %{
+        "message" => "Jira issue request failed with HTTP #{status}.",
+        "status" => status
+      }
+    }
+  end
+
+  defp jira_tool_error_payload({:jira_attachment_status, status, filename}) do
+    %{
+      "error" => %{
+        "message" => "Jira attachment download failed with HTTP #{status}.",
+        "status" => status,
+        "filename" => filename
+      }
+    }
+  end
+
+  defp jira_tool_error_payload({:jira_remote_workspace_unsupported, worker_host}) do
+    %{
+      "error" => %{
+        "message" => "Jira attachment downloads require a local workspace; remote worker downloads are not supported yet.",
+        "workerHost" => worker_host
+      }
+    }
+  end
+
+  defp jira_tool_error_payload(reason) do
+    %{
+      "error" => %{
+        "message" => "Jira attachment tool execution failed.",
         "reason" => inspect(reason)
       }
     }

@@ -112,6 +112,9 @@ defmodule SymphonyElixir.TestSupport do
           tracker_waiting_state: nil,
           tracker_comment_reply_states: [],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
+          jira_site: nil,
+          jira_email: nil,
+          jira_api_token: nil,
           poll_interval_ms: 30_000,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
           repositories_selected: nil,
@@ -161,6 +164,9 @@ defmodule SymphonyElixir.TestSupport do
     tracker_waiting_state = Keyword.get(config, :tracker_waiting_state)
     tracker_comment_reply_states = Keyword.get(config, :tracker_comment_reply_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
+    jira_site = Keyword.get(config, :jira_site)
+    jira_email = Keyword.get(config, :jira_email)
+    jira_api_token = Keyword.get(config, :jira_api_token)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
     workspace_root = Keyword.get(config, :workspace_root)
     repositories_selected = Keyword.get(config, :repositories_selected)
@@ -211,6 +217,10 @@ defmodule SymphonyElixir.TestSupport do
         "  waiting_state: #{yaml_value(tracker_waiting_state)}",
         "  comment_reply_states: #{yaml_value(tracker_comment_reply_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
+        "jira:",
+        "  site: #{yaml_value(jira_site)}",
+        "  email: #{yaml_value(jira_email)}",
+        "  api_token: #{yaml_value(jira_api_token)}",
         "polling:",
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
         "workspace:",

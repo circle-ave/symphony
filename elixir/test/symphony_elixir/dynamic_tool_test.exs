@@ -4,23 +4,38 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   alias SymphonyElixir.Codex.DynamicTool
   alias SymphonyElixir.Linear.Issue
 
-  test "tool_specs advertises the linear_graphql input contract" do
-    assert [
-             %{
-               "description" => description,
-               "inputSchema" => %{
-                 "properties" => %{
-                   "query" => _,
-                   "variables" => _
-                 },
-                 "required" => ["query"],
-                 "type" => "object"
-               },
-               "name" => "linear_graphql"
-             }
-           ] = DynamicTool.tool_specs()
+  test "tool_specs advertises the dynamic tool contracts" do
+    specs = DynamicTool.tool_specs()
+    assert Enum.map(specs, & &1["name"]) == ["linear_graphql", "jira_issue_attachments"]
 
-    assert description =~ "Linear"
+    assert %{
+             "description" => linear_description,
+             "inputSchema" => %{
+               "properties" => %{
+                 "query" => _,
+                 "variables" => _
+               },
+               "required" => ["query"],
+               "type" => "object"
+             }
+           } = Enum.find(specs, &(&1["name"] == "linear_graphql"))
+
+    assert linear_description =~ "Linear"
+
+    assert %{
+             "description" => jira_description,
+             "inputSchema" => %{
+               "properties" => %{
+                 "issue" => _,
+                 "filename_contains" => _,
+                 "download" => _
+               },
+               "required" => ["issue"],
+               "type" => "object"
+             }
+           } = Enum.find(specs, &(&1["name"] == "jira_issue_attachments"))
+
+    assert jira_description =~ "Jira"
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -31,7 +46,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(response["output"]) == %{
              "error" => %{
                "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
-               "supportedTools" => ["linear_graphql"]
+               "supportedTools" => ["linear_graphql", "jira_issue_attachments"]
              }
            }
 
@@ -121,6 +136,63 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert_received {:linear_client_called, forwarded_query, %{}, []}
     assert forwarded_query == String.trim(query)
     assert response["success"] == false
+  end
+
+  test "jira_issue_attachments forwards normalized requests to the Jira client" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "jira_issue_attachments",
+        %{
+          "issue" => " https://circleavenue.atlassian.net/browse/TP-24 ",
+          "filename_contains" => "Screenshot",
+          "download" => true
+        },
+        workspace: "/tmp/symphony-workspace",
+        jira_client: fn params, opts ->
+          send(test_pid, {:jira_client_called, params, opts[:workspace]})
+
+          {:ok,
+           %{
+             "issue" => "TP-24",
+             "attachments" => [
+               %{
+                 "filename" => "Screenshot 2026-04-03 at 1.01.19 PM.png",
+                 "path" => "/tmp/symphony-workspace/.symphony/jira-attachments/TP-24/1-screenshot.png"
+               }
+             ]
+           }}
+        end
+      )
+
+    assert_received {:jira_client_called,
+                     %{
+                       "issue" => "https://circleavenue.atlassian.net/browse/TP-24",
+                       "filename_contains" => "Screenshot",
+                       "download" => true
+                     }, "/tmp/symphony-workspace"}
+
+    assert response["success"] == true
+    decoded = Jason.decode!(response["output"])
+    assert get_in(decoded, ["attachments", Access.at(0), "filename"]) == "Screenshot 2026-04-03 at 1.01.19 PM.png"
+  end
+
+  test "jira_issue_attachments reports missing Jira auth clearly" do
+    response =
+      DynamicTool.execute(
+        "jira_issue_attachments",
+        "TP-24",
+        jira_client: fn _params, _opts -> {:error, :missing_jira_auth} end
+      )
+
+    assert response["success"] == false
+
+    assert Jason.decode!(response["output"]) == %{
+             "error" => %{
+               "message" => "Symphony is missing Jira auth. Set `jira.email` and `jira.api_token` in `WORKFLOW.md` or export `JIRA_EMAIL` and `JIRA_API_TOKEN`."
+             }
+           }
   end
 
   test "linear_graphql rejects blank raw query strings even when using the default client" do

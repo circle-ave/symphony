@@ -160,6 +160,9 @@ Notes:
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
+- `jira.site`, `jira.email`, and `jira.api_token` read from `JIRA_SITE`, `JIRA_EMAIL`, and
+  `JIRA_API_TOKEN` when unset. Agents use these only through the `jira_issue_attachments` dynamic
+  tool, which downloads Jira attachments into the current workspace.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
@@ -168,6 +171,10 @@ Notes:
 ```yaml
 tracker:
   api_key: $LINEAR_API_KEY
+jira:
+  site: $JIRA_SITE
+  email: $JIRA_EMAIL
+  api_token: $JIRA_API_TOKEN
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 repositories:
