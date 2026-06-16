@@ -55,6 +55,32 @@ defmodule SymphonyElixir.ModelRouterTest do
     assert opts[:turn_sandbox_policy] == %{"type" => "readOnly", "networkAccess" => true}
   end
 
+  test "comment reply mode skips the router and uses a compact fast command" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command: "codex base app-server",
+      codex_model_router: router_config()
+    )
+
+    turn_runner = fn _workspace, _prompt, _issue, _opts ->
+      flunk("comment reply mode should not launch the model router")
+    end
+
+    assert {:ok, route} =
+             ModelRouter.route_for_test(issue_fixture(), "/tmp/router-workspace",
+               comment_reply: true,
+               turn_runner: turn_runner
+             )
+
+    assert route.profile == "fast:comment_reply"
+    assert route.command =~ "codex fast"
+    assert route.command =~ "--config features.apps=false"
+    assert route.command =~ "--config features.plugins=false"
+    assert route.command =~ "--config skills.bundled.enabled=false"
+    assert route.command =~ "app-server"
+    assert route.reason =~ "comment reply mode skips model routing"
+    assert route.source == :default
+  end
+
   test "model router falls back to the default profile when output is unusable" do
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_command: "codex base app-server",

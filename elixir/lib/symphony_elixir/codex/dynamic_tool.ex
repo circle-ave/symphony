@@ -3,13 +3,18 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.{Config, Linear.Client}
+  alias SymphonyElixir.{Config, Linear.Client, Tracker}
   alias SymphonyElixir.Jira.Client, as: JiraClient
 
   @linear_graphql_tool "linear_graphql"
   @jira_issue_attachments_tool "jira_issue_attachments"
+  @linear_comment_reply_tool "linear_comment_reply"
+  @comment_reply_marker "<!-- symphony-comment-reply -->"
   @linear_graphql_description """
   Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth.
+  """
+  @linear_comment_reply_description """
+  Atomically save a revised active Codex Workpad and post the reply for the latest Linear comment.
   """
   @jira_issue_attachments_description """
   Fetch Jira issue attachment metadata and download matching attachments into the current workspace using Symphony's configured Jira auth.
@@ -49,6 +54,32 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     }
   }
+  @linear_comment_reply_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["workpad_body", "reply_body"],
+    "properties" => %{
+      "workpad_body" => %{
+        "type" => "string",
+        "description" => "The complete replacement body for the active ## Codex Workpad comment."
+      },
+      "reply_body" => %{
+        "type" => "string",
+        "description" => "The concise reply to post to the latest human comment. The Symphony marker is appended automatically when absent."
+      },
+      "state_name" => %{
+        "type" => ["string", "null"],
+        "description" => "Optional issue state to move to only when the comment reply concludes the issue must be parked or reworked, for example Waiting or Rework."
+      }
+    }
+  }
+  @comment_update_mutation """
+  mutation SymphonyUpdateComment($commentId: String!, $body: String!) {
+    commentUpdate(id: $commentId, input: {body: $body}) {
+      success
+    }
+  }
+  """
   @review_state_names MapSet.new(["human review", "in review", "review"])
   @review_ready_file Path.join([".symphony", "review-ready.json"])
   @acceptance_agent_review_file Path.join([".symphony", "acceptance-agent-review.json"])
@@ -117,6 +148,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       @linear_graphql_tool ->
         execute_linear_graphql(arguments, opts)
 
+      @linear_comment_reply_tool ->
+        execute_linear_comment_reply(arguments, opts)
+
       @jira_issue_attachments_tool ->
         execute_jira_issue_attachments(arguments, opts)
 
@@ -137,6 +171,22 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "name" => @linear_graphql_tool,
         "description" => @linear_graphql_description,
         "inputSchema" => @linear_graphql_input_schema
+      },
+      %{
+        "name" => @jira_issue_attachments_tool,
+        "description" => @jira_issue_attachments_description,
+        "inputSchema" => @jira_issue_attachments_input_schema
+      }
+    ]
+  end
+
+  @spec comment_reply_tool_specs() :: [map()]
+  def comment_reply_tool_specs do
+    [
+      %{
+        "name" => @linear_comment_reply_tool,
+        "description" => @linear_comment_reply_description,
+        "inputSchema" => @linear_comment_reply_input_schema
       },
       %{
         "name" => @jira_issue_attachments_tool,
@@ -168,6 +218,105 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     else
       {:error, reason} ->
         failure_response(jira_tool_error_payload(reason))
+    end
+  end
+
+  defp execute_linear_comment_reply(arguments, opts) do
+    with {:ok, issue} <- comment_reply_issue(opts),
+         {:ok, params} <- normalize_linear_comment_reply_arguments(arguments),
+         :ok <- save_comment_reply_workpad(issue, params, opts),
+         :ok <- maybe_move_comment_reply_issue(issue, params),
+         :ok <- create_comment_reply(issue, params) do
+      dynamic_tool_response(true, encode_payload(%{"saved" => true, "issueId" => issue.id}))
+    else
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp comment_reply_issue(opts) do
+    case Keyword.get(opts, :issue) do
+      %{id: issue_id} = issue when is_binary(issue_id) and issue_id != "" -> {:ok, issue}
+      _ -> {:error, :missing_comment_reply_issue}
+    end
+  end
+
+  defp normalize_linear_comment_reply_arguments(arguments) when is_map(arguments) do
+    with {:ok, workpad_body} <- required_string_argument(arguments, "workpad_body"),
+         {:ok, reply_body} <- required_string_argument(arguments, "reply_body"),
+         {:ok, state_name} <- optional_string_argument(arguments, "state_name") do
+      {:ok, %{workpad_body: workpad_body, reply_body: reply_body, state_name: state_name}}
+    end
+  end
+
+  defp normalize_linear_comment_reply_arguments(_arguments), do: {:error, :invalid_comment_reply_arguments}
+
+  defp required_string_argument(arguments, key) do
+    value = Map.get(arguments, key) || Map.get(arguments, String.to_atom(key))
+
+    case value do
+      value when is_binary(value) ->
+        if String.trim(value) == "", do: {:error, {:missing_comment_reply_argument, key}}, else: {:ok, value}
+
+      _ ->
+        {:error, {:missing_comment_reply_argument, key}}
+    end
+  end
+
+  defp optional_string_argument(arguments, key) do
+    value = Map.get(arguments, key) || Map.get(arguments, String.to_atom(key))
+
+    case value do
+      nil -> {:ok, nil}
+      value when is_binary(value) -> {:ok, String.trim(value)}
+      _ -> {:error, {:invalid_comment_reply_argument, key}}
+    end
+  end
+
+  defp save_comment_reply_workpad(issue, %{workpad_body: workpad_body}, opts) do
+    cond do
+      !String.starts_with?(String.trim_leading(workpad_body), "## Codex Workpad") ->
+        {:error, :invalid_comment_reply_workpad}
+
+      is_binary(Map.get(issue, :active_workpad_comment_id)) ->
+        update_comment_reply_workpad(issue.active_workpad_comment_id, workpad_body, opts)
+
+      true ->
+        Tracker.create_comment(issue.id, workpad_body)
+    end
+  end
+
+  defp update_comment_reply_workpad(comment_id, body, opts) do
+    linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
+
+    case linear_client.(@comment_update_mutation, %{commentId: comment_id, body: body}, []) do
+      {:ok, response} ->
+        if get_in(response, ["data", "commentUpdate", "success"]) == true do
+          :ok
+        else
+          {:error, :comment_update_failed}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_move_comment_reply_issue(_issue, %{state_name: state_name}) when state_name in [nil, ""], do: :ok
+
+  defp maybe_move_comment_reply_issue(issue, %{state_name: state_name}) do
+    Tracker.update_issue_state(issue.id, state_name)
+  end
+
+  defp create_comment_reply(issue, %{reply_body: reply_body}) do
+    Tracker.create_comment(issue.id, ensure_comment_reply_marker(reply_body))
+  end
+
+  defp ensure_comment_reply_marker(reply_body) do
+    if String.contains?(reply_body, @comment_reply_marker) do
+      reply_body
+    else
+      String.trim_trailing(reply_body) <> "\n\n" <> @comment_reply_marker
     end
   end
 
@@ -1209,6 +1358,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp supported_tool_names do
-    Enum.map(tool_specs(), & &1["name"])
+    (tool_specs() ++ comment_reply_tool_specs())
+    |> Enum.map(& &1["name"])
+    |> Enum.uniq()
   end
 end

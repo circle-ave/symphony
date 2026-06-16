@@ -4,7 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.Codex.{AppServer, ModelRouter}
+  alias SymphonyElixir.Codex.{AppServer, DynamicTool, ModelRouter}
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, ScopeAudit, Tracker, Workspace}
 
   @resource_gate_markers %{
@@ -102,10 +102,15 @@ defmodule SymphonyElixir.AgentRunner do
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
   defp maybe_load_resume_checkpoint(opts, workspace, %Issue{} = issue) when is_binary(workspace) do
-    if Keyword.has_key?(opts, :resume_checkpoint) do
-      opts
-    else
-      Keyword.put(opts, :resume_checkpoint, load_resume_checkpoint(workspace, issue))
+    cond do
+      Keyword.get(opts, :comment_reply, false) ->
+        Keyword.put_new(opts, :resume_checkpoint, nil)
+
+      Keyword.has_key?(opts, :resume_checkpoint) ->
+        opts
+
+      true ->
+        Keyword.put(opts, :resume_checkpoint, load_resume_checkpoint(workspace, issue))
     end
   end
 
@@ -166,13 +171,23 @@ defmodule SymphonyElixir.AgentRunner do
 
     with {:ok, model_route} <- ModelRouter.route(issue, workspace, router_opts),
          :ok <- send_model_route_update(codex_update_recipient, issue, model_route),
-         session_opts <- Keyword.merge(router_opts, command: model_route.command),
+         session_opts <- codex_session_opts(router_opts, model_route),
          {:ok, session} <- AppServer.start_session(workspace, session_opts) do
       try do
         do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
       after
         AppServer.stop_session(session)
       end
+    end
+  end
+
+  defp codex_session_opts(opts, model_route) do
+    opts = Keyword.merge(opts, command: model_route.command)
+
+    if Keyword.get(opts, :comment_reply, false) do
+      Keyword.put(opts, :dynamic_tools, DynamicTool.comment_reply_tool_specs())
+    else
+      opts
     end
   end
 
@@ -238,13 +253,10 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp build_turn_prompt(issue, opts, 1, _max_turns, phase) do
-    prompt = PromptBuilder.build_prompt(issue, Keyword.put(opts, :phase, phase))
-
     if Keyword.get(opts, :comment_reply, false) do
-      comment_reply_prompt(issue, Keyword.get(opts, :comment_reply_marker, @comment_reply_marker)) <>
-        "\n\n" <> prompt
+      comment_reply_prompt(issue, Keyword.get(opts, :comment_reply_marker, @comment_reply_marker))
     else
-      prompt
+      PromptBuilder.build_prompt(issue, Keyword.put(opts, :phase, phase))
     end
   end
 
@@ -289,16 +301,32 @@ defmodule SymphonyElixir.AgentRunner do
     - Reply directly to the latest comment. Do not start unrelated implementation work.
     - If the comment asks only for review recipe, demo recipe, validation-note, or workpad repair, update the existing workpad/comment only; do not rerun implementation, PR publishing, broad repo search, Jira attachment fetches, or browser-heavy checks unless the comment specifically requires fresh evidence.
     - If the comment requests code changes, move the issue to `Rework` before changing files, then follow the normal workflow.
-    - If the latest comment contains a Linear image URL, inspect it before replying. Fetch `uploads.linear.app` assets with the raw Linear token header: `Authorization: $LINEAR_API_KEY`.
-    - If the latest comment references a Jira browse link or imported Jira attachment note, call `jira_issue_attachments` and inspect the downloaded local attachment paths before replying.
-    - Include this hidden marker at the end of any Linear reply you post so Symphony does not treat its own reply as a new request:
-      #{marker}
+    - If no functional review/demo can be derived from the issue, active workpad, existing validation evidence, or directly linked artifacts, add the unresolved question under `### Confusions` and set `state_name` to `Waiting`.
+    - Use the `linear_comment_reply` tool exactly once to save the complete revised workpad and reply. Do not call raw Linear GraphQL.
+    - The tool appends this hidden marker automatically when absent: #{marker}
+
+    Issue:
+    - Identifier: #{issue.identifier}
+    - Title: #{issue.title}
+    - State: #{issue.state}
+    - Labels: #{Enum.join(issue.labels || [], ", ")}
+    - URL: #{issue.url}
+
+    Description:
+    #{issue.description || "No description provided."}
 
     Latest comment:
     Author: #{issue.latest_comment_user_name || issue.latest_comment_user_id || "unknown"}
     Created at: #{format_comment_timestamp(issue.latest_comment_created_at)}
 
     #{issue.latest_comment_body || ""}
+
+    Active Codex Workpad comment:
+    Updated at: #{format_comment_timestamp(issue.active_workpad_updated_at)}
+
+    ```markdown
+    #{issue.active_workpad_body || "No active ## Codex Workpad comment was found. Create a complete one in workpad_body."}
+    ```
     """
   end
 

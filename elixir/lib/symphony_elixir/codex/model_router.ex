@@ -28,10 +28,15 @@ defmodule SymphonyElixir.Codex.ModelRouter do
     profiles = profiles(router_config)
     default_route = default_route(settings, router_config, profiles)
 
-    if router_enabled?(router_config) and map_size(profiles) > 0 do
-      route_with_model(issue, workspace, opts, router_config, profiles, default_route)
-    else
-      {:ok, default_route}
+    cond do
+      Keyword.get(opts, :comment_reply, false) ->
+        {:ok, comment_reply_route(profiles, default_route)}
+
+      router_enabled?(router_config) and map_size(profiles) > 0 ->
+        route_with_model(issue, workspace, opts, router_config, profiles, default_route)
+
+      true ->
+        {:ok, default_route}
     end
   end
 
@@ -343,6 +348,42 @@ defmodule SymphonyElixir.Codex.ModelRouter do
 
   defp fallback_route(default_route, reason) do
     %{default_route | reason: reason, confidence: nil, source: :fallback}
+  end
+
+  defp comment_reply_route(profiles, default_route) do
+    route =
+      Map.get(profiles, "fast") ||
+        Map.get(profiles, :fast) ||
+        default_route
+
+    profile_id = Map.get(route, :profile) || Map.fetch!(route, :id)
+
+    Map.merge(route, %{
+      profile: "#{profile_id}:comment_reply",
+      command: compact_comment_reply_command(route.command),
+      reason: "comment reply mode skips model routing and uses a compact tool surface",
+      confidence: 1.0,
+      source: :default
+    })
+  end
+
+  defp compact_comment_reply_command(command) when is_binary(command) do
+    flags =
+      [
+        "--config features.apps=false",
+        "--config features.plugins=false",
+        "--config features.multi_agent=false",
+        "--config features.tool_search=false",
+        "--config features.tool_suggest=false",
+        "--config skills.bundled.enabled=false",
+        "--config project_doc_max_bytes=0"
+      ]
+      |> Enum.join(" ")
+
+    case Regex.run(~r/^(.*?)(\s+app-server\s*)$/, command) do
+      [_, prefix, suffix] -> String.trim_trailing(prefix) <> " " <> flags <> suffix
+      _ -> command <> " " <> flags
+    end
   end
 
   defp router_enabled?(%{} = router_config), do: truthy?(map_get(router_config, "enabled"))

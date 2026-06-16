@@ -39,6 +39,7 @@ defmodule SymphonyElixir.Linear.Client do
             id
             body
             createdAt
+            updatedAt
             user {
               id
               name
@@ -96,6 +97,7 @@ defmodule SymphonyElixir.Linear.Client do
             id
             body
             createdAt
+            updatedAt
             user {
               id
               name
@@ -591,6 +593,7 @@ defmodule SymphonyElixir.Linear.Client do
   defp normalize_issue(issue, assignee_filter) when is_map(issue) do
     assignee = issue["assignee"]
     latest_comment = latest_actionable_comment(issue)
+    active_workpad = active_workpad_comment(issue)
 
     %Issue{
       id: issue["id"],
@@ -607,6 +610,9 @@ defmodule SymphonyElixir.Linear.Client do
       latest_comment_created_at: parse_datetime(comment_field(latest_comment, "createdAt")),
       latest_comment_user_id: comment_user_field(latest_comment, "id"),
       latest_comment_user_name: comment_user_name(latest_comment),
+      active_workpad_comment_id: comment_field(active_workpad, "id"),
+      active_workpad_body: comment_field(active_workpad, "body"),
+      active_workpad_updated_at: parse_datetime(comment_field(active_workpad, "updatedAt") || comment_field(active_workpad, "createdAt")),
       blocked_by: extract_blockers(issue),
       labels: extract_labels(issue),
       assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),
@@ -633,6 +639,20 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp latest_actionable_comment(_issue), do: nil
+
+  defp active_workpad_comment(%{"comments" => %{"nodes" => comments}}) when is_list(comments) do
+    comments
+    |> Enum.sort_by(&comment_sort_key/1, :desc)
+    |> Enum.find(&active_workpad_comment?/1)
+  end
+
+  defp active_workpad_comment(_issue), do: nil
+
+  defp active_workpad_comment?(%{"body" => body}) when is_binary(body) do
+    String.starts_with?(String.trim_leading(body), "## Codex Workpad")
+  end
+
+  defp active_workpad_comment?(_comment), do: false
 
   defp handled_comment_reply?(%{"body" => body}) when is_binary(body) do
     String.contains?(body, @comment_reply_marker)

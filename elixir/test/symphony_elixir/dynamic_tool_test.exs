@@ -46,7 +46,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(response["output"]) == %{
              "error" => %{
                "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
-               "supportedTools" => ["linear_graphql", "jira_issue_attachments"]
+               "supportedTools" => ["linear_graphql", "jira_issue_attachments", "linear_comment_reply"]
              }
            }
 
@@ -56,6 +56,58 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "text" => response["output"]
              }
            ]
+  end
+
+  test "comment_reply_tool_specs advertises the focused save tool" do
+    specs = DynamicTool.comment_reply_tool_specs()
+    assert Enum.map(specs, & &1["name"]) == ["linear_comment_reply", "jira_issue_attachments"]
+
+    assert %{
+             "inputSchema" => %{
+               "required" => ["workpad_body", "reply_body"],
+               "properties" => %{
+                 "workpad_body" => _,
+                 "reply_body" => _,
+                 "state_name" => _
+               }
+             }
+           } = Enum.find(specs, &(&1["name"] == "linear_comment_reply"))
+  end
+
+  test "linear_comment_reply updates the active workpad and posts a marked reply" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue = %Issue{
+      id: "issue-comment-reply",
+      identifier: "MT-900",
+      active_workpad_comment_id: "comment-workpad"
+    }
+
+    response =
+      DynamicTool.execute(
+        "linear_comment_reply",
+        %{
+          "workpad_body" => "## Codex Workpad\n\n### Demo / Review Recipe\n- Open: http://localhost:3000/api/analytics\n- Verify: analytics events are recorded.",
+          "reply_body" => "Updated the review recipe to use the runtime analytics surface."
+        },
+        issue: issue,
+        linear_client: fn query, variables, opts ->
+          send(self(), {:linear_comment_update, query, variables, opts})
+          {:ok, %{"data" => %{"commentUpdate" => %{"success" => true}}}}
+        end
+      )
+
+    assert response["success"] == true
+    assert Jason.decode!(response["output"]) == %{"saved" => true, "issueId" => "issue-comment-reply"}
+
+    assert_received {:linear_comment_update, query,
+                     %{commentId: "comment-workpad", body: "## Codex Workpad\n\n### Demo / Review Recipe\n- Open: http://localhost:3000/api/analytics\n- Verify: analytics events are recorded."}, []}
+
+    assert query =~ "commentUpdate"
+    assert_received {:memory_tracker_comment, "issue-comment-reply", reply}
+    assert reply =~ "Updated the review recipe"
+    assert reply =~ "<!-- symphony-comment-reply -->"
   end
 
   test "linear_graphql returns successful GraphQL responses as tool text" do

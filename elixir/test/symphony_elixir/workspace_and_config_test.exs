@@ -510,6 +510,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
               "id" => "comment-workpad",
               "body" => "## Codex Workpad\n\nProgress",
               "createdAt" => "2026-05-06T12:00:00Z",
+              "updatedAt" => "2026-05-06T12:00:30Z",
               "user" => %{"id" => "user-1", "displayName" => "dillon"}
             },
             %{
@@ -539,6 +540,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.latest_comment_user_id == nil
     assert issue.latest_comment_user_name == nil
     assert issue.latest_comment_created_at == nil
+    assert issue.active_workpad_comment_id == "comment-workpad"
+    assert issue.active_workpad_body == "## Codex Workpad\n\nProgress"
+    assert issue.active_workpad_updated_at == ~U[2026-05-06 12:00:30Z]
   end
 
   test "linear client normalizes human comment newer than comment reply marker" do

@@ -1854,6 +1854,52 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(state.comment_reply_seen, issue_id)
   end
 
+  test "blocked comment reply records latest comment as seen" do
+    write_workflow_file!(Workflow.workflow_file_path(), max_turn_tokens: 100)
+
+    issue_id = "issue-comment-token-block"
+    orchestrator_name = Module.concat(__MODULE__, :CommentReplyTokenBlockOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-568",
+      state: "In Review",
+      url: "https://example.org/issues/MT-568",
+      latest_comment_id: "comment-1"
+    }
+
+    running_entry = %{
+      identifier: "MT-568",
+      comment_reply: true,
+      issue: issue,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:comment_reply_seen, %{})
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:codex_worker_update, issue_id, token_count_update(101)})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    assert state.comment_reply_seen[issue_id] == "comment-1"
+    assert Map.has_key?(state.blocked, issue_id)
+  end
+
   test "normal worker exit schedules active-state continuation retry" do
     issue_id = "issue-resume"
     ref = make_ref()
@@ -4006,5 +4052,28 @@ defmodule SymphonyElixir.CoreTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp token_count_update(total_tokens) do
+    %{
+      event: :token_count,
+      timestamp: DateTime.utc_now(),
+      payload: %{
+        "method" => "codex/event/token_count",
+        "params" => %{
+          "msg" => %{
+            "payload" => %{
+              "info" => %{
+                "total_token_usage" => %{
+                  "input_tokens" => total_tokens,
+                  "output_tokens" => 0,
+                  "total_tokens" => total_tokens
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   end
 end

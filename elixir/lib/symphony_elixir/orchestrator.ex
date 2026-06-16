@@ -1535,6 +1535,7 @@ defmodule SymphonyElixir.Orchestrator do
         claimed: MapSet.put(state.claimed, issue_id),
         blocked: Map.put(state.blocked, issue_id, blocked_entry)
     }
+    |> maybe_mark_comment_reply_seen(running_entry)
   end
 
   defp choose_issues(issues, state) do
