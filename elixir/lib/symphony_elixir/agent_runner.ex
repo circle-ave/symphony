@@ -190,7 +190,7 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    phase = PromptBuilder.phase_for_issue(issue)
+    phase = PromptBuilder.phase_for_issue(issue, opts)
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns, phase)
     send_prompt_prepared_update(codex_update_recipient, issue, prompt, phase, turn_number, max_turns)
 
@@ -287,6 +287,7 @@ defmodule SymphonyElixir.AgentRunner do
 
     - A new actionable Linear comment was left on this issue while it is in `#{issue.state}`.
     - Reply directly to the latest comment. Do not start unrelated implementation work.
+    - If the comment asks only for review recipe, demo recipe, validation-note, or workpad repair, update the existing workpad/comment only; do not rerun implementation, PR publishing, broad repo search, Jira attachment fetches, or browser-heavy checks unless the comment specifically requires fresh evidence.
     - If the comment requests code changes, move the issue to `Rework` before changing files, then follow the normal workflow.
     - If the latest comment contains a Linear image URL, inspect it before replying. Fetch `uploads.linear.app` assets with the raw Linear token header: `Authorization: $LINEAR_API_KEY`.
     - If the latest comment references a Jira browse link or imported Jira attachment note, call `jira_issue_attachments` and inspect the downloaded local attachment paths before replying.

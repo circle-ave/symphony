@@ -407,6 +407,7 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.get(tracker, "kind") == "linear"
     refute Map.has_key?(tracker, "project_slug")
     assert is_list(Map.get(tracker, "active_states"))
+    assert Map.get(tracker, "comment_reply_states") == ["Human Review", "In Review"]
     assert is_list(Map.get(tracker, "terminal_states"))
 
     repositories = Map.get(config, "repositories", %{})
@@ -2776,6 +2777,8 @@ defmodule SymphonyElixir.CoreTest do
     assert PromptBuilder.phase_for_issue(%{state: "In Progress"}) == "execution"
     assert PromptBuilder.phase_for_issue(%{state: nil}) == "execution"
     assert PromptBuilder.phase_for_issue(%{}) == "execution"
+    assert PromptBuilder.phase_for_issue(%{state: "In Progress"}, comment_reply: true) == "comment_reply"
+    assert PromptBuilder.phase_for_issue(%{state: "In Review"}, comment_reply: true) == "comment_reply"
   end
 
   test "prompt builder uses strict variable rendering" do
@@ -2949,6 +2952,32 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Do not call `gh pr merge` directly"
     refute prompt =~ "## Execution Packet"
     refute prompt =~ "PR feedback sweep before `Human Review`"
+  end
+
+  test "in-repo WORKFLOW.md renders focused comment reply packet" do
+    workflow_path = Workflow.workflow_file_path()
+    Workflow.set_workflow_file_path(Path.expand("WORKFLOW.md", File.cwd!()))
+
+    issue = %Issue{
+      identifier: "MT-618",
+      title: "Repair review recipe",
+      description: "The review recipe points at a PR instead of the app.",
+      state: "In Review",
+      url: "https://example.org/issues/MT-618/repair-review-recipe",
+      labels: ["review"],
+      latest_comment_body: "Please rewrite the Demo / Review Recipe so it demos runtime behavior."
+    }
+
+    on_exit(fn -> Workflow.set_workflow_file_path(workflow_path) end)
+
+    prompt = PromptBuilder.build_prompt(issue, comment_reply: true)
+
+    assert prompt =~ "Prompt phase: `comment_reply`"
+    assert prompt =~ "## Comment Reply Packet"
+    assert prompt =~ "update the one active `## Codex Workpad`"
+    assert prompt =~ "rewrite `Demo / Review Recipe`"
+    refute prompt =~ "## Execution Packet"
+    refute prompt =~ "Run the Scope Confidence Gate"
   end
 
   test "prompt builder adds continuation guidance for retries" do

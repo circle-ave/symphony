@@ -20,7 +20,7 @@ defmodule SymphonyElixir.PromptBuilder do
 
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
-    phase = Keyword.get(opts, :phase) || phase_for_issue(issue)
+    phase = Keyword.get(opts, :phase) || phase_for_issue(issue, opts)
 
     template =
       Workflow.current()
@@ -45,6 +45,15 @@ defmodule SymphonyElixir.PromptBuilder do
   def phase_for_issue(%{state: state}), do: phase_for_state(state)
   def phase_for_issue(%{"state" => state}), do: phase_for_state(state)
   def phase_for_issue(_issue), do: "execution"
+
+  @spec phase_for_issue(map(), keyword()) :: String.t()
+  def phase_for_issue(issue, opts) do
+    if Keyword.get(opts, :comment_reply, false) do
+      "comment_reply"
+    else
+      phase_for_issue(issue)
+    end
+  end
 
   defp phase_for_state(state) when is_binary(state) do
     Map.get(@phase_by_state, state |> String.trim() |> String.downcase(), "execution")
