@@ -3,17 +3,23 @@ defmodule SymphonyElixir.Codex.MessageText do
 
   @spec output([term()]) :: String.t()
   def output(messages) when is_list(messages) do
-    completed =
+    completed_outputs =
       messages
-      |> Enum.flat_map(&completed_agent_parts/1)
-      |> Enum.join("")
+      |> Enum.map(fn message ->
+        message
+        |> completed_agent_parts()
+        |> Enum.join("")
+      end)
+      |> Enum.reject(&(&1 == ""))
 
-    if completed == "" do
-      messages
-      |> Enum.flat_map(&parts/1)
-      |> Enum.join("")
-    else
-      completed
+    case List.last(completed_outputs) do
+      nil ->
+        messages
+        |> Enum.flat_map(&parts/1)
+        |> Enum.join("")
+
+      completed ->
+        completed
     end
   end
 

@@ -20,6 +20,12 @@ defmodule SymphonyElixir.Codex.MessageTextTest do
       %{
         "payload" => %{
           "method" => "item/completed",
+          "params" => %{"item" => %{"type" => "agentMessage", "text" => "commentary"}}
+        }
+      },
+      %{
+        "payload" => %{
+          "method" => "item/completed",
           "params" => %{"item" => %{"type" => "agentMessage", "text" => "final"}}
         }
       }
