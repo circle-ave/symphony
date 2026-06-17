@@ -871,25 +871,34 @@ defmodule SymphonyElixir.CoreTest do
       retry_attempts: %{}
     }
 
+    token_count_msg =
+      Jason.encode!(%{
+        "type" => "event_msg",
+        "payload" => %{
+          "type" => "token_count",
+          "info" => %{
+            "total_token_usage" => %{
+              "input_tokens" => 1_500,
+              "output_tokens" => 101,
+              "total_tokens" => 1_601
+            },
+            "last_token_usage" => %{
+              "input_tokens" => 650,
+              "output_tokens" => 51,
+              "total_tokens" => 701
+            }
+          }
+        }
+      })
+
     {:noreply, updated_state} =
       Orchestrator.handle_info(
         {:codex_worker_update, issue_id,
          %{
            event: :notification,
            payload: %{
-             "type" => "token_count",
-             "info" => %{
-               "total_token_usage" => %{
-                 "input_tokens" => 1_500,
-                 "output_tokens" => 101,
-                 "total_tokens" => 1_601
-               },
-               "last_token_usage" => %{
-                 "input_tokens" => 650,
-                 "output_tokens" => 51,
-                 "total_tokens" => 701
-               }
-             }
+             "method" => "codex/event/token_count",
+             "params" => %{"msg" => token_count_msg}
            },
            timestamp: DateTime.utc_now()
          }},

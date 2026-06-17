@@ -4123,6 +4123,8 @@ defmodule SymphonyElixir.Orchestrator do
       Map.get(update, :usage),
       update[:payload],
       Map.get(update, "payload"),
+      update[:raw],
+      Map.get(update, "raw"),
       update
     ]
 
@@ -4138,6 +4140,8 @@ defmodule SymphonyElixir.Orchestrator do
       Map.get(update, :usage),
       update[:payload],
       Map.get(update, "payload"),
+      update[:raw],
+      Map.get(update, "raw"),
       update
     ]
 
@@ -4169,7 +4173,8 @@ defmodule SymphonyElixir.Orchestrator do
       [:tokenUsage, :total]
     ]
 
-    explicit_map_at_paths(payload, absolute_paths)
+    explicit_map_at_paths(payload, absolute_paths) ||
+      named_token_usage_from_payload(payload, "total_token_usage", :total_token_usage)
   end
 
   defp absolute_token_usage_from_payload(_payload), do: nil
@@ -4186,7 +4191,8 @@ defmodule SymphonyElixir.Orchestrator do
       [:info, :last_token_usage]
     ]
 
-    explicit_map_at_paths(payload, last_usage_paths)
+    explicit_map_at_paths(payload, last_usage_paths) ||
+      named_token_usage_from_payload(payload, "last_token_usage", :last_token_usage)
   end
 
   defp last_token_usage_from_payload(_payload), do: nil
@@ -4283,6 +4289,31 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp explicit_map_at_paths(_payload, _paths), do: nil
+
+  defp named_token_usage_from_payload(payload, string_key, atom_key) when is_map(payload) do
+    direct = Map.get(payload, string_key) || Map.get(payload, atom_key)
+
+    if is_map(direct) and integer_token_map?(direct) do
+      direct
+    else
+      payload
+      |> Map.values()
+      |> Enum.find_value(&named_token_usage_from_payload(&1, string_key, atom_key))
+    end
+  end
+
+  defp named_token_usage_from_payload(payload, string_key, atom_key) when is_list(payload) do
+    Enum.find_value(payload, &named_token_usage_from_payload(&1, string_key, atom_key))
+  end
+
+  defp named_token_usage_from_payload(payload, string_key, atom_key) when is_binary(payload) do
+    case Jason.decode(payload) do
+      {:ok, decoded} -> named_token_usage_from_payload(decoded, string_key, atom_key)
+      _ -> nil
+    end
+  end
+
+  defp named_token_usage_from_payload(_payload, _string_key, _atom_key), do: nil
 
   defp map_at_path(payload, path) when is_map(payload) and is_list(path) do
     Enum.reduce_while(path, payload, fn key, acc ->
