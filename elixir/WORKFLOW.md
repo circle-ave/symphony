@@ -100,7 +100,7 @@ Core rules:
 - This is unattended orchestration. Never ask a human to perform repo, validation, deploy, or review actions.
 - Clarification is allowed only by parking the issue: unresolved product, scope, acceptance, or target-surface ambiguity must be recorded in the workpad and the issue must be moved to `Waiting`, not guessed through implementation.
 - Work only in the provided repository copy.
-- Linear access is required through Linear MCP or `linear_graphql`; if unavailable, stop with a blocker.
+- Linear access is available through Linear MCP or `linear_graphql`; use injected issue/workpad context first, and fetch only missing, issue-scoped fields with small pagination.
 - If the issue or latest human comment references a Jira browse link or imported Jira attachment note, call `jira_issue_attachments` before deciding scope or implementing. Use the downloaded local attachment paths as source evidence.
 - Use exactly one active `## Codex Workpad` comment as the progress source of truth.
 - Keep final replies to completed actions and blockers only. No user next steps.
@@ -165,7 +165,7 @@ The issue is terminal. Do not modify anything. Report that no action was require
 
 - Treat `Rework` as an approach reset, not a tiny patch.
 - When this run starts from `Rework`, the orchestrator should already have claimed the issue as the configured agent and moved it to `In Progress`; keep using this rework packet for the approach.
-- Re-read the issue body and all human comments. Record what will be different this attempt.
+- Re-read the issue body, the latest actionable human comment, and the active workpad. Fetch older comments only when acceptance depends on them, using small issue-scoped pages. Record what will be different this attempt.
 - Reuse and rewrite the existing `## Codex Workpad`; preserve only still-useful historical facts in compact notes.
 - Sync the configured development branch `{{ repository.branch }}` from `origin/{{ repository.branch }}`. Do not create a feature branch.
 - Then follow the execution packet from workpad creation through validation and `Human Review`.
@@ -175,10 +175,10 @@ The issue is terminal. Do not modify anything. Report that no action was require
 ## Execution Packet
 
 Startup order:
-1. Fetch the current issue state.
+1. Use the injected issue state first; fetch only missing issue-scoped fields.
 2. If `Todo`, immediately move to `In Progress`. If `Rework`, claim the issue as the configured agent if possible and move it to `In Progress` before work.
 3. Find/create one active `## Codex Workpad`; ignore resolved comments.
-4. Reconcile existing checklist state against the issue body, all active human comments, and linked review context before new edits. Existing workpad acceptance criteria are evidence, not authority.
+4. Reconcile existing checklist state against the issue body, latest actionable human comment, active workpad, and directly linked review context before new edits. Existing workpad acceptance criteria are evidence, not authority.
 5. Record environment stamp as `<host>:<abs-workdir>@<short-sha>`.
 6. Add/update `Scope Confidence`, `Plan`, `Acceptance Criteria`, `Validation`, `Demo / Review Recipe`, `Notes`, and `Confusions`.
 7. Run the Scope Confidence Gate before code changes.
@@ -203,7 +203,7 @@ Execution loop:
 - Rebase or merge latest `origin/{{ repository.branch }}`, resolve conflicts, rerun checks, commit on `{{ repository.branch }}`, and push that same branch. Do not create a feature branch or PR unless a human explicitly asks for one.
 
 Review feedback sweep before `Human Review`:
-- Gather top-level comments, inline comments, and review summaries.
+- Gather only issue-scoped, paginated feedback needed to resolve actionable review comments.
 - Treat every actionable human or bot comment as blocking until code/test/docs address it or a justified pushback reply is posted.
 - Re-run validation after feedback changes and repeat until no actionable comments remain.
 
