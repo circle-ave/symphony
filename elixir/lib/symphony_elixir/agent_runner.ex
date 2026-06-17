@@ -197,23 +197,30 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp run_scope_audit_preflight(workspace, issue, codex_update_recipient, opts, worker_host) do
-    audit_runner = Keyword.get(opts, :scope_audit_runner, &ScopeAudit.run/4)
-    audit_opts = Keyword.put(opts, :worker_host, worker_host)
+    if in_progress_issue?(issue.state) do
+      :clear
+    else
+      audit_runner = Keyword.get(opts, :scope_audit_runner, &ScopeAudit.run/4)
+      audit_opts = Keyword.put(opts, :worker_host, worker_host)
 
-    case audit_runner.(issue, workspace, codex_update_recipient, audit_opts) do
-      {:ok, :disabled} ->
-        :clear
+      case audit_runner.(issue, workspace, codex_update_recipient, audit_opts) do
+        {:ok, :disabled} ->
+          :clear
 
-      {:ok, %ScopeAudit.Result{verdict: :clear}} ->
-        :clear
+        {:ok, %ScopeAudit.Result{verdict: :clear}} ->
+          :clear
 
-      {:ok, %ScopeAudit.Result{verdict: :blocked} = result} ->
-        handle_blocked_scope_audit(issue, result)
+        {:ok, %ScopeAudit.Result{verdict: :blocked} = result} ->
+          handle_blocked_scope_audit(issue, result)
 
-      {:error, reason} ->
-        {:error, {:scope_audit_failed, reason}}
+        {:error, reason} ->
+          {:error, {:scope_audit_failed, reason}}
+      end
     end
   end
+
+  defp in_progress_issue?(state) when is_binary(state), do: normalize_issue_state(state) == "in progress"
+  defp in_progress_issue?(_state), do: false
 
   defp handle_blocked_scope_audit(issue, result) do
     if ScopeAudit.reworkable_review_recipe_blocker?(result) do

@@ -3427,7 +3427,7 @@ defmodule SymphonyElixir.CoreTest do
         identifier: "MT-560",
         title: "Ambiguous asset generation",
         description: "Generate missing assets, but target surface is unclear.",
-        state: "In Progress",
+        state: "Rework",
         url: "https://example.org/issues/MT-560",
         labels: []
       }
@@ -3456,6 +3456,93 @@ defmodule SymphonyElixir.CoreTest do
 
       workspace = Path.join(workspace_root, "MT-560")
       refute File.exists?(Path.join(workspace, "before-run-ran"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "in-progress continuations skip scope audit preflight" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-in-progress-skip-audit-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      audit_binary = Path.join(test_root, "fake-scope-audit")
+      audit_trace = Path.join(test_root, "fake-scope-audit.trace")
+
+      File.mkdir_p!(workspace_root)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{\"id\":1,\"result\":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-in-progress-skip\"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-in-progress-skip\"}}}'
+            printf '%s\\n' '{\"method\":\"turn/completed\"}'
+            exit 0
+            ;;
+          *)
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      File.write!(audit_binary, """
+      #!/bin/sh
+      printf 'scope audit invoked\\n' > "#{audit_trace}"
+      exit 1
+      """)
+
+      File.chmod!(audit_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_waiting_state: "Waiting",
+        workspace_root: workspace_root,
+        hook_before_run: "touch before-run-ran",
+        codex_command: "#{codex_binary} app-server",
+        scope_audit: %{enabled: true, command: "#{audit_binary} app-server"}
+      )
+
+      issue = %Issue{
+        id: "issue-in-progress-skip-audit",
+        identifier: "MT-563",
+        title: "Continue analytics implementation",
+        description: "Broad ticket body that would be ambiguous for a fresh start.",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-563",
+        labels: [],
+        active_workpad_body: "## Codex Workpad\n\nContinue from current implementation state."
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, self(),
+                 max_turns: 1,
+                 issue_state_fetcher: fn ["issue-in-progress-skip-audit"] ->
+                   {:ok, [%{issue | state: "Done"}]}
+                 end
+               )
+
+      workspace = Path.join(workspace_root, "MT-563")
+      assert File.exists?(Path.join(workspace, "before-run-ran"))
+      refute File.exists?(audit_trace)
+      refute_receive {:memory_tracker_state_update, "issue-in-progress-skip-audit", "Waiting"}, 300
     after
       File.rm_rf(test_root)
     end
