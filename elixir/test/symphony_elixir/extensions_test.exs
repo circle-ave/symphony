@@ -267,8 +267,76 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert :ok = Adapter.create_comment("issue-1", "hello")
-    assert_receive {:graphql_called, create_comment_query, %{body: "hello", issueId: "issue-1"}}
+    assert_receive {:graphql_called, create_comment_query, %{input: %{body: "hello", issueId: "issue-1"}}}
     assert create_comment_query =~ "commentCreate"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_oauth_access_token: "oauth-token",
+      tracker_comment_as: "Symphony",
+      tracker_comment_avatar_url: "https://example.test/symphony.png",
+      tracker_comment_identities: %{
+        "scope_audit" => %{
+          "name" => "Scope Auditor",
+          "display_icon_url" => "https://example.test/scope.png"
+        }
+      }
+    )
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+    )
+
+    assert :ok = Adapter.create_comment("issue-1", "audit", identity: :scope_audit)
+
+    assert_receive {:graphql_called, _create_comment_query,
+                    %{
+                      input: %{
+                        body: "audit",
+                        issueId: "issue-1",
+                        createAsUser: "Scope Auditor",
+                        displayIconUrl: "https://example.test/scope.png"
+                      }
+                    }}
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+    )
+
+    assert :ok = Adapter.create_comment("issue-1", "default identity")
+
+    assert_receive {:graphql_called, _create_comment_query,
+                    %{
+                      input: %{
+                        body: "default identity",
+                        issueId: "issue-1",
+                        createAsUser: "Symphony",
+                        displayIconUrl: "https://example.test/symphony.png"
+                      }
+                    }}
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_oauth_access_token: "oauth-token",
+      tracker_comment_identities: %{"workpad" => "bad"}
+    )
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"commentCreate" => %{"success" => true}}}}
+    )
+
+    assert :ok =
+             Adapter.create_comment("issue-1", "blank identity",
+               identity: :workpad,
+               create_as_user: "  ",
+               display_icon_url: " "
+             )
+
+    assert_receive {:graphql_called, _create_comment_query, %{input: %{body: "blank identity", issueId: "issue-1"} = blank_identity_input}}
+
+    refute Map.has_key?(blank_identity_input, :createAsUser)
+    refute Map.has_key?(blank_identity_input, :displayIconUrl)
 
     Process.put(
       {FakeLinearClient, :graphql_result},
@@ -438,7 +506,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert :ok = Adapter.create_comment("issue-onyx", "same project")
-    assert_receive {:graphql_called, create_comment_query, %{body: "same project", issueId: "issue-onyx"}}
+    assert_receive {:graphql_called, create_comment_query, %{input: %{body: "same project", issueId: "issue-onyx"}}}
     assert create_comment_query =~ "commentCreate"
   end
 

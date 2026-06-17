@@ -653,6 +653,25 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert log =~ "Variable \\\"$ids\\\" got invalid value"
   end
 
+  test "linear client uses oauth bearer auth when configured" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: nil,
+      tracker_oauth_access_token: "oauth-token"
+    )
+
+    assert {:ok, %{"data" => %{}}} =
+             Client.graphql(
+               "query Viewer { viewer { id } }",
+               %{},
+               request_fun: fn _payload, headers ->
+                 assert {"Authorization", "Bearer oauth-token"} = List.keyfind(headers, "Authorization", 0)
+                 assert {"Content-Type", "application/json"} = List.keyfind(headers, "Content-Type", 0)
+
+                 {:ok, %{status: 200, body: %{"data" => %{}}}}
+               end
+             )
+  end
+
   test "linear client honors graphql rate limit cooldown responses" do
     Client.clear_rate_limit_cooldown_for_test()
     on_exit(fn -> Client.clear_rate_limit_cooldown_for_test() end)
@@ -1058,8 +1077,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
   test "config reads defaults for optional settings" do
     previous_linear_api_key = System.get_env("LINEAR_API_KEY")
-    on_exit(fn -> restore_env("LINEAR_API_KEY", previous_linear_api_key) end)
+    previous_linear_oauth_access_token = System.get_env("LINEAR_OAUTH_ACCESS_TOKEN")
+
+    on_exit(fn ->
+      restore_env("LINEAR_API_KEY", previous_linear_api_key)
+      restore_env("LINEAR_OAUTH_ACCESS_TOKEN", previous_linear_oauth_access_token)
+    end)
+
     System.delete_env("LINEAR_API_KEY")
+    System.delete_env("LINEAR_OAUTH_ACCESS_TOKEN")
 
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: nil,
@@ -1077,6 +1103,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     config = Config.settings!()
     assert config.tracker.endpoint == "https://api.linear.app/graphql"
     assert config.tracker.api_key == nil
+    assert config.tracker.oauth_access_token == nil
+    assert config.tracker.comment_as == nil
+    assert config.tracker.comment_avatar_url == nil
+    assert config.tracker.comment_identities == %{}
     assert config.tracker.project_slug == nil
     assert config.tracker.required_labels == []
     assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")

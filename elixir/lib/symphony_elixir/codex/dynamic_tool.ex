@@ -11,7 +11,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   @linear_comment_reply_tool "linear_comment_reply"
   @comment_reply_marker "<!-- symphony-comment-reply -->"
   @linear_graphql_description """
-  Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth.
+  Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth. Use linear_comment_reply for agent replies so the configured comment identity is applied.
   """
   @linear_comment_reply_description """
   Atomically save a revised active Codex Workpad and post the reply for the latest Linear comment.
@@ -282,7 +282,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         update_comment_reply_workpad(issue.active_workpad_comment_id, workpad_body, opts)
 
       true ->
-        Tracker.create_comment(issue.id, workpad_body)
+        Tracker.create_comment(issue.id, workpad_body, identity: :workpad)
     end
   end
 
@@ -309,7 +309,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp create_comment_reply(issue, %{reply_body: reply_body}) do
-    Tracker.create_comment(issue.id, ensure_comment_reply_marker(reply_body))
+    Tracker.create_comment(issue.id, ensure_comment_reply_marker(reply_body), identity: :comment_reply)
   end
 
   defp ensure_comment_reply_marker(reply_body) do
@@ -1280,7 +1280,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp tool_error_payload(:missing_linear_api_token) do
     %{
       "error" => %{
-        "message" => "Symphony is missing Linear auth. Set `linear.api_key` in `WORKFLOW.md` or export `LINEAR_API_KEY`."
+        "message" => "Symphony is missing Linear auth. Set `tracker.api_key`/`LINEAR_API_KEY` or `tracker.oauth_access_token`/`LINEAR_OAUTH_ACCESS_TOKEN`."
       }
     }
   end

@@ -447,6 +447,32 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok = Config.validate!()
   end
 
+  test "linear oauth token resolves from LINEAR_OAUTH_ACCESS_TOKEN env var" do
+    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+    previous_linear_oauth_access_token = System.get_env("LINEAR_OAUTH_ACCESS_TOKEN")
+    env_oauth_access_token = "test-linear-oauth-token"
+
+    on_exit(fn ->
+      restore_env("LINEAR_API_KEY", previous_linear_api_key)
+      restore_env("LINEAR_OAUTH_ACCESS_TOKEN", previous_linear_oauth_access_token)
+    end)
+
+    System.delete_env("LINEAR_API_KEY")
+    System.put_env("LINEAR_OAUTH_ACCESS_TOKEN", env_oauth_access_token)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: nil,
+      tracker_oauth_access_token: nil,
+      tracker_project_slug: "project",
+      codex_command: "/bin/sh app-server"
+    )
+
+    assert Config.settings!().tracker.api_key == nil
+    assert Config.settings!().tracker.oauth_access_token == env_oauth_access_token
+    assert Config.settings!().tracker.project_slug == "project"
+    assert :ok = Config.validate!()
+  end
+
   test "linear assignee resolves from LINEAR_ASSIGNEE env var" do
     previous_linear_assignee = System.get_env("LINEAR_ASSIGNEE")
     env_assignee = "dev@example.com"

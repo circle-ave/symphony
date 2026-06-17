@@ -138,7 +138,7 @@ defmodule SymphonyElixir.Linear.Client do
     project_slug = tracker.project_slug
 
     cond do
-      is_nil(tracker.api_key) ->
+      not linear_auth_configured?(tracker) ->
         {:error, :missing_linear_api_token}
 
       is_nil(project_slug) ->
@@ -162,7 +162,7 @@ defmodule SymphonyElixir.Linear.Client do
       project_slug = tracker.project_slug
 
       cond do
-        is_nil(tracker.api_key) ->
+        not linear_auth_configured?(tracker) ->
           {:error, :missing_linear_api_token}
 
         is_nil(project_slug) ->
@@ -340,7 +340,7 @@ defmodule SymphonyElixir.Linear.Client do
     tracker = Config.settings!().tracker
 
     cond do
-      is_nil(tracker.api_key) -> {:error, :missing_linear_api_token}
+      not linear_auth_configured?(tracker) -> {:error, :missing_linear_api_token}
       is_nil(tracker.project_slug) -> {:error, :missing_linear_project_slug}
       true -> {:ok, tracker.project_slug}
     end
@@ -526,18 +526,38 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp graphql_headers do
-    case Config.settings!().tracker.api_key do
+    case linear_authorization_header(Config.settings!().tracker) do
       nil ->
         {:error, :missing_linear_api_token}
 
-      token ->
+      authorization ->
         {:ok,
          [
-           {"Authorization", token},
+           {"Authorization", authorization},
            {"Content-Type", "application/json"}
          ]}
     end
   end
+
+  defp linear_auth_configured?(tracker) do
+    is_binary(tracker.oauth_access_token) or is_binary(tracker.api_key)
+  end
+
+  defp linear_authorization_header(%{oauth_access_token: token}) when is_binary(token) do
+    token = String.trim(token)
+
+    cond do
+      token == "" -> nil
+      String.starts_with?(String.downcase(token), "bearer ") -> token
+      true -> "Bearer " <> token
+    end
+  end
+
+  defp linear_authorization_header(%{api_key: token}) when is_binary(token) do
+    token
+  end
+
+  defp linear_authorization_header(_tracker), do: nil
 
   defp post_graphql_request(payload, headers) do
     Req.post(Config.settings!().tracker.endpoint,

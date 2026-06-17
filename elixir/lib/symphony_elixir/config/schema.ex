@@ -53,6 +53,9 @@ defmodule SymphonyElixir.Config.Schema do
       field(:oauth_client_id, :string)
       field(:oauth_client_secret, :string)
       field(:oauth_scope, :string, default: "read,write")
+      field(:comment_as, :string)
+      field(:comment_avatar_url, :string)
+      field(:comment_identities, :map, default: %{})
       field(:project_slug, :string)
       field(:assignee, :string)
       field(:required_labels, {:array, :string}, default: [])
@@ -75,6 +78,9 @@ defmodule SymphonyElixir.Config.Schema do
           :oauth_client_id,
           :oauth_client_secret,
           :oauth_scope,
+          :comment_as,
+          :comment_avatar_url,
+          :comment_identities,
           :project_slug,
           :assignee,
           :required_labels,
@@ -647,6 +653,9 @@ defmodule SymphonyElixir.Config.Schema do
           oauth_client_id: resolve_secret_setting(settings.tracker.oauth_client_id, System.get_env("LINEAR_OAUTH_CLIENT_ID")),
           oauth_client_secret: resolve_secret_setting(settings.tracker.oauth_client_secret, System.get_env("LINEAR_OAUTH_CLIENT_SECRET")),
           oauth_scope: resolve_secret_setting(settings.tracker.oauth_scope, System.get_env("LINEAR_OAUTH_SCOPE") || "read,write"),
+          comment_as: resolve_optional_string(settings.tracker.comment_as, System.get_env("LINEAR_COMMENT_AS")),
+          comment_avatar_url: resolve_optional_string(settings.tracker.comment_avatar_url, System.get_env("LINEAR_COMMENT_AVATAR_URL")),
+          comment_identities: normalize_optional_map(settings.tracker.comment_identities) || %{},
           assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
       }
       |> merge_selected_repository_tracker(repositories)

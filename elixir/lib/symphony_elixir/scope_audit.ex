@@ -58,7 +58,7 @@ defmodule SymphonyElixir.ScopeAudit do
       when is_binary(issue_id) do
     case Config.settings!().tracker.waiting_state do
       waiting_state when is_binary(waiting_state) and waiting_state != "" ->
-        case Tracker.create_comment(issue_id, blocked_workpad(issue, result)) do
+        case Tracker.create_comment(issue_id, blocked_workpad(issue, result), identity: :scope_audit) do
           :ok -> Tracker.update_issue_state(issue_id, waiting_state)
           error -> error
         end

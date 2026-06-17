@@ -159,7 +159,7 @@ defmodule SymphonyElixir.Config do
       settings.tracker.kind not in ["linear", "memory"] ->
         {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
 
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
+      settings.tracker.kind == "linear" and not linear_auth_configured?(settings.tracker) ->
         {:error, :missing_linear_api_token}
 
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
@@ -201,6 +201,10 @@ defmodule SymphonyElixir.Config do
   defp duplicate_repository_ids?(repositories) do
     ids = Enum.map(repositories, & &1.id)
     ids != Enum.uniq(ids)
+  end
+
+  defp linear_auth_configured?(tracker) do
+    is_binary(tracker.api_key) or is_binary(tracker.oauth_access_token)
   end
 
   defp format_config_error(reason) do

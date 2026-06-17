@@ -162,6 +162,12 @@ Notes:
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
+- `tracker.oauth_access_token` reads from `LINEAR_OAUTH_ACCESS_TOKEN`. Use an OAuth app token
+  installed with Linear's `actor=app` flow when Symphony comments should appear from the app instead
+  of the personal API-key user.
+- With app-actor OAuth, `tracker.comment_as`, `tracker.comment_avatar_url`, and
+  `tracker.comment_identities` add Linear `createAsUser`/`displayIconUrl` values to generated
+  comments. Supported identity keys include `workpad`, `comment_reply`, `scope_audit`, and `system`.
 - `jira.site`, `jira.email`, and `jira.api_token` read from `JIRA_SITE`, `JIRA_EMAIL`, and
   `JIRA_API_TOKEN` when unset. Agents use these only through the `jira_issue_attachments` dynamic
   tool, which downloads Jira attachments into the current workspace.
@@ -173,6 +179,16 @@ Notes:
 ```yaml
 tracker:
   api_key: $LINEAR_API_KEY
+  oauth_access_token: $LINEAR_OAUTH_ACCESS_TOKEN
+  comment_identities:
+    workpad:
+      name: Symphony Workpad
+    comment_reply:
+      name: Symphony Comment Reply
+    scope_audit:
+      name: Symphony Scope Auditor
+    system:
+      name: Symphony
 jira:
   site: $JIRA_SITE
   email: $JIRA_EMAIL

@@ -105,6 +105,10 @@ defmodule SymphonyElixir.TestSupport do
           tracker_kind: "linear",
           tracker_endpoint: "https://api.linear.app/graphql",
           tracker_api_token: "token",
+          tracker_oauth_access_token: nil,
+          tracker_comment_as: nil,
+          tracker_comment_avatar_url: nil,
+          tracker_comment_identities: %{},
           tracker_project_slug: "project",
           tracker_assignee: nil,
           tracker_required_labels: [],
@@ -157,6 +161,10 @@ defmodule SymphonyElixir.TestSupport do
     tracker_kind = Keyword.get(config, :tracker_kind)
     tracker_endpoint = Keyword.get(config, :tracker_endpoint)
     tracker_api_token = Keyword.get(config, :tracker_api_token)
+    tracker_oauth_access_token = Keyword.get(config, :tracker_oauth_access_token)
+    tracker_comment_as = Keyword.get(config, :tracker_comment_as)
+    tracker_comment_avatar_url = Keyword.get(config, :tracker_comment_avatar_url)
+    tracker_comment_identities = Keyword.get(config, :tracker_comment_identities)
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
     tracker_required_labels = Keyword.get(config, :tracker_required_labels)
@@ -210,6 +218,10 @@ defmodule SymphonyElixir.TestSupport do
         "  kind: #{yaml_value(tracker_kind)}",
         "  endpoint: #{yaml_value(tracker_endpoint)}",
         "  api_key: #{yaml_value(tracker_api_token)}",
+        "  oauth_access_token: #{yaml_value(tracker_oauth_access_token)}",
+        "  comment_as: #{yaml_value(tracker_comment_as)}",
+        "  comment_avatar_url: #{yaml_value(tracker_comment_avatar_url)}",
+        "  comment_identities: #{yaml_value(tracker_comment_identities)}",
         "  project_slug: #{yaml_value(tracker_project_slug)}",
         "  assignee: #{yaml_value(tracker_assignee)}",
         "  required_labels: #{yaml_value(tracker_required_labels)}",

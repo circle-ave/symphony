@@ -513,7 +513,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_dispatch_error(state, :missing_linear_api_token) do
-    Logger.error("Linear API token missing in WORKFLOW.md")
+    Logger.error("Linear auth missing in WORKFLOW.md")
     {state, nil}
   end
 
@@ -871,7 +871,7 @@ defmodule SymphonyElixir.Orchestrator do
     if waiting_auto_recovery_comment_present?(issue) do
       :ok
     else
-      Tracker.create_comment(issue_id, waiting_recovery_comment_body(recovery_state))
+      Tracker.create_comment(issue_id, waiting_recovery_comment_body(recovery_state), identity: :system)
     end
   end
 
