@@ -877,22 +877,17 @@ defmodule SymphonyElixir.CoreTest do
          %{
            event: :notification,
            payload: %{
-             "method" => "codex/event/token_count",
-             "params" => %{
-               "msg" => %{
-                 "type" => "token_count",
-                 "info" => %{
-                   "total_token_usage" => %{
-                     "input_tokens" => 1_500,
-                     "output_tokens" => 101,
-                     "total_tokens" => 1_601
-                   },
-                   "last_token_usage" => %{
-                     "input_tokens" => 650,
-                     "output_tokens" => 51,
-                     "total_tokens" => 701
-                   }
-                 }
+             "type" => "token_count",
+             "info" => %{
+               "total_token_usage" => %{
+                 "input_tokens" => 1_500,
+                 "output_tokens" => 101,
+                 "total_tokens" => 1_601
+               },
+               "last_token_usage" => %{
+                 "input_tokens" => 650,
+                 "output_tokens" => 51,
+                 "total_tokens" => 701
                }
              }
            },
