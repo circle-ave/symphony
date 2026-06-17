@@ -109,12 +109,10 @@ defmodule SymphonyElixir.ModelRouterTest do
       codex_model_router: router_config()
     )
 
-    test_pid = self()
-
     turn_runner = fn _workspace, _prompt, _issue, _opts ->
-      send(test_pid, {:router_message, %{"method" => "item/completed", "params" => %{"item" => %{"type" => "userMessage", "content" => [%{"type" => "text", "text" => ~s({"profile":"fast"})}]}}}})
-      send(test_pid, {:router_message, %{"method" => "item/agentMessage/delta", "params" => %{"delta" => ~s|{"profile":|}}})
-      send(test_pid, {:router_message, %{"method" => "item/agentMessage/delta", "params" => %{"delta" => ~s|"deep","confidence":0.88,"reason":"current events"}|}}})
+      send(self(), {:router_message, %{"method" => "item/completed", "params" => %{"item" => %{"type" => "userMessage", "content" => [%{"type" => "text", "text" => ~s({"profile":"fast"})}]}}}})
+      send(self(), {:router_message, %{"method" => "item/agentMessage/delta", "params" => %{"delta" => ~s|{"profile":|}}})
+      send(self(), {:router_message, %{"method" => "item/agentMessage/delta", "params" => %{"delta" => ~s|"deep","confidence":0.88,"reason":"current events"}|}}})
 
       output =
         receive_router_messages([])
@@ -131,6 +129,29 @@ defmodule SymphonyElixir.ModelRouterTest do
     assert route.confidence == 0.88
     assert route.reason == "current events"
     assert route.source == :router
+  end
+
+  test "model router falls back when the router turn times out" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command: "codex base app-server",
+      codex_model_router: Map.put(router_config(), :timeout_ms, 10)
+    )
+
+    test_pid = self()
+
+    turn_runner = fn _workspace, _prompt, _issue, _opts ->
+      send(test_pid, :router_started)
+      Process.sleep(:infinity)
+    end
+
+    assert {:ok, route} =
+             ModelRouter.route_for_test(issue_fixture(), "/tmp/router-workspace", turn_runner: turn_runner)
+
+    assert_receive :router_started
+    assert route.profile == "standard"
+    assert route.command == "codex standard app-server"
+    assert route.source == :fallback
+    assert route.reason == "model router failed: {:router_timeout, 10}"
   end
 
   test "agent runner launches the selected model profile command" do

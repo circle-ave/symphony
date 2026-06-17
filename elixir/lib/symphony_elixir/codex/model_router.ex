@@ -13,6 +13,8 @@ defmodule SymphonyElixir.Codex.ModelRouter do
     "networkAccess" => true
   }
 
+  @default_router_timeout_ms 60_000
+
   @type route :: %{
           profile: String.t(),
           command: String.t(),
@@ -57,13 +59,32 @@ defmodule SymphonyElixir.Codex.ModelRouter do
       turn_sandbox_policy: router_turn_sandbox_policy(router_config)
     ]
 
-    case turn_runner.(workspace, prompt, issue, runner_opts) do
+    case run_router_with_timeout(
+           fn -> turn_runner.(workspace, prompt, issue, runner_opts) end,
+           router_timeout_ms(router_config)
+         ) do
       {:ok, output} ->
         route_from_output(output, profiles, default_route)
 
       {:error, reason} ->
         Logger.warning("Model router failed for #{issue_context(issue)}: #{inspect(reason)}")
         {:ok, fallback_route(default_route, "model router failed: #{inspect(reason)}")}
+    end
+  end
+
+  defp run_router_with_timeout(fun, timeout_ms) when is_function(fun, 0) and is_integer(timeout_ms) do
+    task = Task.async(fun)
+
+    case Task.yield(task, timeout_ms) do
+      {:ok, result} ->
+        result
+
+      {:exit, reason} ->
+        {:error, {:router_exit, reason}}
+
+      nil ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, {:router_timeout, timeout_ms}}
     end
   end
 
@@ -368,6 +389,22 @@ defmodule SymphonyElixir.Codex.ModelRouter do
     case map_get(router_config, "turn_sandbox_policy") do
       %{} = policy -> policy
       _ -> @read_only_turn_sandbox
+    end
+  end
+
+  defp router_timeout_ms(router_config) do
+    case map_get(router_config, "timeout_ms") do
+      timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 ->
+        timeout_ms
+
+      timeout_ms when is_binary(timeout_ms) ->
+        case Integer.parse(String.trim(timeout_ms)) do
+          {parsed, ""} when parsed > 0 -> parsed
+          _ -> @default_router_timeout_ms
+        end
+
+      _ ->
+        @default_router_timeout_ms
     end
   end
 

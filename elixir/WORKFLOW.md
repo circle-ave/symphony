@@ -53,6 +53,7 @@ codex:
   command: codex --config shell_environment_policy.inherit=all --config 'notify=[]' --config tool_output_token_limit=4000 --config features.apps=false --config features.plugins=false --config features.browser_use=false --config features.chronicle=false --config features.computer_use=false --config features.image_generation=false --config features.memories=false --config features.multi_agent=false --config features.shell_snapshot=false --config features.tool_search=false --config features.tool_suggest=false --config features.workspace_dependencies=false --config skills.bundled.enabled=false --config project_doc_max_bytes=0 --config 'model="gpt-5.5"' --config model_reasoning_effort=medium app-server
   model_router:
     enabled: true
+    timeout_ms: 60000
     router_command: codex --config shell_environment_policy.inherit=all --config 'notify=[]' --config tool_output_token_limit=4000 --config features.apps=false --config features.plugins=false --config features.browser_use=false --config features.chronicle=false --config features.computer_use=false --config features.image_generation=false --config features.memories=false --config features.multi_agent=false --config features.shell_snapshot=false --config features.tool_search=false --config features.tool_suggest=false --config features.workspace_dependencies=false --config skills.bundled.enabled=false --config project_doc_max_bytes=0 --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
     default_profile: standard
     profiles:
