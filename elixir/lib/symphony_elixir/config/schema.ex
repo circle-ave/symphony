@@ -499,16 +499,8 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
-  defp resolve_explicit_runtime_turn_sandbox_policy(settings, workspace, opts, policy) do
-    workspace_root = default_workspace_root(workspace, settings.workspace.root)
-
-    if workspace_write_policy_needs_roots?(policy) do
-      with {:ok, default_policy} <- default_runtime_turn_sandbox_policy(workspace_root, opts) do
-        {:ok, maybe_apply_default_writable_roots(default_policy, policy)}
-      end
-    else
-      {:ok, policy}
-    end
+  defp resolve_explicit_runtime_turn_sandbox_policy(_settings, workspace, opts, policy) do
+    maybe_add_runtime_workspace_write_root(policy, workspace, opts)
   end
 
   @spec normalize_issue_state(String.t()) :: String.t()
@@ -953,6 +945,62 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp usable_writable_roots?(roots) when is_list(roots), do: Enum.any?(roots, &is_binary/1)
   defp usable_writable_roots?(_roots), do: false
+
+  defp maybe_add_runtime_workspace_write_root(%{} = policy, workspace, opts) do
+    if policy_type(policy) == "workspaceWrite" do
+      case runtime_workspace_write_root(workspace, opts) do
+        {:ok, nil} ->
+          {:ok, policy}
+
+        {:ok, workspace_root} ->
+          {:ok, Map.put(policy, "writableRoots", prepend_writable_root(workspace_root, Map.get(policy, "writableRoots")))}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:ok, policy}
+    end
+  end
+
+  defp runtime_workspace_write_root(workspace, opts) when is_binary(workspace) and workspace != "" do
+    if Keyword.get(opts, :remote, false) do
+      {:ok, workspace}
+    else
+      workspace
+      |> expand_local_workspace_root()
+      |> PathSafety.canonicalize()
+    end
+  end
+
+  defp runtime_workspace_write_root(_workspace, _opts), do: {:ok, nil}
+
+  defp prepend_writable_root(workspace_root, writable_roots) when is_list(writable_roots) do
+    writable_roots = Enum.filter(writable_roots, &is_binary/1)
+
+    if Enum.any?(writable_roots, &same_writable_root?(&1, workspace_root)) do
+      Enum.uniq(writable_roots)
+    else
+      [workspace_root | writable_roots]
+      |> Enum.uniq()
+    end
+  end
+
+  defp prepend_writable_root(workspace_root, _writable_roots), do: [workspace_root]
+
+  defp same_writable_root?(root, workspace_root) when is_binary(root) and is_binary(workspace_root) do
+    root == workspace_root or canonical_writable_root(root) == {:ok, workspace_root}
+  end
+
+  defp canonical_writable_root(root) do
+    if Path.type(root) == :absolute do
+      root
+      |> Path.expand()
+      |> PathSafety.canonicalize()
+    else
+      :error
+    end
+  end
 
   defp default_runtime_turn_sandbox_policy(workspace_root, opts) when is_binary(workspace_root) do
     if Keyword.get(opts, :remote, false) do

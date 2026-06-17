@@ -1426,6 +1426,17 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              workspace: %Schema.Workspace{root: "/tmp/ignored"}
            }) == explicit_policy
 
+    missing_roots_policy = %{"type" => "workspaceWrite", "networkAccess" => true}
+
+    assert Schema.resolve_turn_sandbox_policy(%Schema{
+             codex: %Codex{turn_sandbox_policy: missing_roots_policy},
+             workspace: %Schema.Workspace{root: "/tmp/static-root"}
+           }) == %{
+             "type" => "workspaceWrite",
+             "networkAccess" => true,
+             "writableRoots" => [Path.expand("/tmp/static-root")]
+           }
+
     assert Schema.resolve_turn_sandbox_policy(%Schema{
              codex: %Codex{turn_sandbox_policy: nil},
              workspace: %Schema.Workspace{root: ""}
@@ -1540,10 +1551,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       )
 
       assert {:ok, runtime_settings} = Config.codex_runtime_settings(issue_workspace)
+      assert {:ok, canonical_issue_workspace} = SymphonyElixir.PathSafety.canonicalize(issue_workspace)
 
       assert runtime_settings.turn_sandbox_policy == %{
                "type" => "workspaceWrite",
-               "writableRoots" => ["relative/path"],
+               "writableRoots" => [canonical_issue_workspace, "relative/path"],
                "networkAccess" => true
              }
 
@@ -1564,6 +1576,105 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  test "runtime sandbox policy resolution leaves explicit workspaceWrite roots unchanged without a workspace" do
+    settings = %Schema{
+      codex: %Codex{
+        turn_sandbox_policy: %{
+          "type" => "workspaceWrite",
+          "writableRoots" => "not-a-list",
+          "networkAccess" => true
+        }
+      },
+      workspace: %Schema.Workspace{root: "/tmp/ignored"}
+    }
+
+    assert {:ok, policy} = Schema.resolve_runtime_turn_sandbox_policy(settings, nil)
+
+    assert policy == %{
+             "type" => "workspaceWrite",
+             "writableRoots" => "not-a-list",
+             "networkAccess" => true
+           }
+  end
+
+  test "runtime sandbox policy resolution normalizes explicit workspaceWrite roots when needed" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-runtime-sandbox-normalize-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      issue_workspace = Path.join(test_root, "MT-201")
+      File.mkdir_p!(issue_workspace)
+
+      settings = %Schema{
+        codex: %Codex{
+          turn_sandbox_policy: %{
+            "type" => "workspaceWrite",
+            "writableRoots" => "not-a-list",
+            "networkAccess" => true
+          }
+        },
+        workspace: %Schema.Workspace{root: "/tmp/ignored"}
+      }
+
+      assert {:ok, policy} = Schema.resolve_runtime_turn_sandbox_policy(settings, issue_workspace)
+      assert {:ok, canonical_issue_workspace} = SymphonyElixir.PathSafety.canonicalize(issue_workspace)
+
+      assert policy == %{
+               "type" => "workspaceWrite",
+               "writableRoots" => [canonical_issue_workspace],
+               "networkAccess" => true
+             }
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "runtime sandbox policy resolution preserves explicit workspaceWrite roots for remote workers" do
+    remote_workspace = "/remote/workspaces/MT-200"
+
+    settings = %Schema{
+      codex: %Codex{
+        turn_sandbox_policy: %{
+          "type" => "workspaceWrite",
+          "writableRoots" => [123, "relative/path"],
+          "networkAccess" => true
+        }
+      },
+      workspace: %Schema.Workspace{root: "/tmp/ignored"}
+    }
+
+    assert {:ok, policy} =
+             Schema.resolve_runtime_turn_sandbox_policy(settings, remote_workspace, remote: true)
+
+    assert policy == %{
+             "type" => "workspaceWrite",
+             "writableRoots" => [remote_workspace, "relative/path"],
+             "networkAccess" => true
+           }
+  end
+
+  test "runtime sandbox policy resolution returns local workspace errors" do
+    invalid_segment = String.duplicate("a", 300)
+    workspace = Path.join(System.tmp_dir!(), invalid_segment)
+    expanded_workspace = Path.expand(workspace)
+
+    settings = %Schema{
+      codex: %Codex{
+        turn_sandbox_policy: %{
+          "type" => "workspaceWrite",
+          "networkAccess" => true
+        }
+      },
+      workspace: %Schema.Workspace{root: "/tmp/ignored"}
+    }
+
+    assert {:error, {:path_canonicalize_failed, ^expanded_workspace, :enametoolong}} =
+             Schema.resolve_runtime_turn_sandbox_policy(settings, workspace)
   end
 
   test "path safety returns errors for invalid path segments" do

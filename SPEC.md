@@ -481,8 +481,8 @@ fields locally if they want stricter startup checks.
   - Default: implementation-defined.
 - `turn_sandbox_policy` (Codex `SandboxPolicy` value)
   - Default: implementation-defined.
-  - For `workspaceWrite`, implementations SHOULD supply the per-issue workspace as
-    `writableRoots` when the configured policy omits writable roots.
+  - For `workspaceWrite`, implementations SHOULD keep the per-issue workspace in
+    `writableRoots` even when the configured policy adds extra writable roots.
 - `model_router` (object)
   - Optional.
   - When enabled, implementations MAY run a short classification turn before the root agent session.
