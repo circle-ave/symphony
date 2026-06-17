@@ -10,8 +10,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   @jira_issue_attachments_tool "jira_issue_attachments"
   @linear_comment_reply_tool "linear_comment_reply"
   @comment_reply_marker "<!-- symphony-comment-reply -->"
+  @linear_graphql_string_value_limit 1_500
   @linear_graphql_description """
-  Execute a targeted Linear GraphQL query or mutation using Symphony's configured auth. Prefer injected issue/workpad fields first; keep reads issue-scoped and paginated. Broad issue/comment/review reads are rejected. Use linear_comment_reply for agent replies so the configured comment identity is applied.
+  Execute a targeted Linear GraphQL query or mutation using Symphony's configured auth. Prefer injected issue/workpad fields first; keep reads issue-scoped and paginated. Broad issue/comment/review reads are rejected, and large string fields are truncated. Use linear_comment_reply for agent replies so the configured comment identity is applied.
   """
   @linear_read_connection_limits [
     {"comments", 10},
@@ -208,7 +209,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
          :ok <- validate_linear_graphql_read_shape(query, variables),
          :ok <- authorize_linear_graphql(query, variables, opts, linear_client),
          {:ok, response} <- linear_client.(query, variables, []) do
-      graphql_response(response)
+      response
+      |> truncate_linear_graphql_response()
+      |> graphql_response()
     else
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
@@ -1308,6 +1311,29 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
     dynamic_tool_response(success, encode_payload(response))
   end
+
+  defp truncate_linear_graphql_response(value) when is_map(value) do
+    value
+    |> Enum.map(fn {key, child} -> {key, truncate_linear_graphql_response(child)} end)
+    |> Map.new()
+  end
+
+  defp truncate_linear_graphql_response(value) when is_list(value) do
+    Enum.map(value, &truncate_linear_graphql_response/1)
+  end
+
+  defp truncate_linear_graphql_response(value) when is_binary(value) do
+    if String.length(value) > @linear_graphql_string_value_limit do
+      omitted = String.length(value) - @linear_graphql_string_value_limit
+
+      String.slice(value, 0, @linear_graphql_string_value_limit) <>
+        "\n\n[truncated #{omitted} chars by Symphony linear_graphql output cap]"
+    else
+      value
+    end
+  end
+
+  defp truncate_linear_graphql_response(value), do: value
 
   defp failure_response(payload) do
     dynamic_tool_response(false, encode_payload(payload))

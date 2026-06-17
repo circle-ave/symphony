@@ -42,8 +42,8 @@ hooks:
 agent:
   max_concurrent_agents: 6
   max_turns: 5
-  max_turn_tokens: 50000
-  max_run_tokens: 90000
+  max_turn_tokens: 80000
+  max_run_tokens: 140000
   scope_audit:
     enabled: true
     command: codex --config shell_environment_policy.inherit=all --config tool_output_token_limit=4000 --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
@@ -101,6 +101,7 @@ Core rules:
 - Clarification is allowed only by parking the issue: unresolved product, scope, acceptance, or target-surface ambiguity must be recorded in the workpad and the issue must be moved to `Waiting`, not guessed through implementation.
 - Work only in the provided repository copy.
 - Linear access is available through Linear MCP or `linear_graphql`; use injected issue/workpad context first, and fetch only missing, issue-scoped fields with small pagination.
+- Avoid refetching full Linear comment/workpad bodies unless required; large `linear_graphql` string fields are truncated, so use injected context and exact comment IDs over broad comment body reads.
 - Keep shell output bounded: use targeted paths/patterns and `max_output_tokens <= 5000`; avoid repo-root `rg --files`, `find`, `ls -R`, or broad `rg -n` searches that can return hundreds of lines. If output is huge or truncated, stop and rerun a narrower command.
 - If the issue or latest human comment references a Jira browse link or imported Jira attachment note, call `jira_issue_attachments` before deciding scope or implementing. Use the downloaded local attachment paths as source evidence.
 - Use exactly one active `## Codex Workpad` comment as the progress source of truth.

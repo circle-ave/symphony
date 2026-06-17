@@ -176,6 +176,40 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["contentItems"] == [%{"type" => "inputText", "text" => response["output"]}]
   end
 
+  test "linear_graphql truncates large string fields in successful responses" do
+    long_body = String.duplicate("a", 1_650)
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{"query" => "query Issue { issue(id: \"CIR-135\") { comments(first: 1) { nodes { body } } } }"},
+        linear_client: fn _query, _variables, _opts ->
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "comments" => %{
+                   "nodes" => [
+                     %{
+                       "body" => long_body,
+                       "id" => "comment-1"
+                     }
+                   ]
+                 }
+               }
+             }
+           }}
+        end
+      )
+
+    assert response["success"] == true
+    decoded = Jason.decode!(response["output"])
+    body = get_in(decoded, ["data", "issue", "comments", "nodes", Access.at(0), "body"])
+
+    assert String.length(body) < String.length(long_body)
+    assert body =~ "[truncated 150 chars by Symphony linear_graphql output cap]"
+  end
+
   test "linear_graphql accepts a raw GraphQL query string" do
     test_pid = self()
 
