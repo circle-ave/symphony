@@ -788,6 +788,19 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert %{"status" => "resuming", "resumed" => true} = json_response(conn, 202)
   end
 
+  test "observability state subtracts reserved agent slots from available capacity" do
+    orchestrator_name = Module.concat(__MODULE__, :ReservedSlotOrchestrator)
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_concurrent_agents: 4)
+
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: Map.put(static_snapshot(), :reserved_agent_slots, 1)})
+
+    payload = SymphonyElixirWeb.Presenter.state_payload(orchestrator_name, 50)
+
+    assert payload.environment.available_agent_slots == 2
+    assert payload.environment.reserved_agent_slots == 1
+  end
+
   test "phoenix observability api exposes a matching local codex session log tail" do
     sessions_dir =
       Path.join(System.tmp_dir!(), "symphony-codex-sessions-#{System.unique_integer([:positive])}")

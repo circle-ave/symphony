@@ -3229,6 +3229,7 @@ defmodule SymphonyElixir.Orchestrator do
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
        freeze: state.freeze,
+       reserved_agent_slots: reserved_comment_reply_slots(state),
        agent_roles: agent_role_snapshot_entries(state, now_ms),
        polling: %{
          checking?: state.poll_check_in_progress == true,

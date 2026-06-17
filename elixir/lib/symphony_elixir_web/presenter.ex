@@ -365,11 +365,13 @@ defmodule SymphonyElixirWeb.Presenter do
   defp environment_payload(config, snapshot) do
     workspace_paths = workspace_paths(snapshot)
     repositories = Config.repository_options(config)
+    reserved_agent_slots = Map.get(snapshot, :reserved_agent_slots, 0)
 
     %{
       workspace_root: Path.expand(config.workspace.root),
       max_concurrent_agents: config.agent.max_concurrent_agents,
-      available_agent_slots: max(config.agent.max_concurrent_agents - length(snapshot.running), 0),
+      available_agent_slots: max(config.agent.max_concurrent_agents - length(snapshot.running) - reserved_agent_slots, 0),
+      reserved_agent_slots: reserved_agent_slots,
       max_concurrent_agents_by_state: config.agent.max_concurrent_agents_by_state,
       worker_hosts: config.worker.ssh_hosts,
       worker_host_count: length(config.worker.ssh_hosts),
