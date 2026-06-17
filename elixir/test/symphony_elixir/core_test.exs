@@ -903,6 +903,34 @@ defmodule SymphonyElixir.CoreTest do
     assert updated_state.blocked == %{}
     assert updated_state.codex_totals.total_tokens == 1_601
 
+    {:noreply, updated_state} =
+      Orchestrator.handle_info(
+        {:codex_worker_update, issue_id,
+         %{
+           event: :notification,
+           payload: %{
+             "method" => "thread/tokenUsage/updated",
+             "params" => %{
+               "tokenUsage" => %{
+                 "total" => %{
+                   "inputTokens" => 1_500,
+                   "outputTokens" => 101,
+                   "totalTokens" => 1_601
+                 }
+               }
+             }
+           },
+           timestamp: DateTime.utc_now()
+         }},
+        updated_state
+      )
+
+    assert %{^issue_id => running_entry} = updated_state.running
+    assert running_entry.codex_last_delta_total_tokens == 0
+    assert running_entry.codex_last_usage_total_tokens == 701
+    assert updated_state.blocked == %{}
+    assert updated_state.codex_totals.total_tokens == 1_601
+
     send(agent_pid, :stop)
   end
 

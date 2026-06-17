@@ -3773,7 +3773,9 @@ defmodule SymphonyElixir.Orchestrator do
         codex_total_tokens: codex_total_tokens + token_delta.total_tokens,
         codex_turn_base_total_tokens: if(new_turn?, do: codex_total_tokens, else: codex_turn_base_total_tokens),
         codex_last_delta_total_tokens: token_delta.total_tokens,
-        codex_last_usage_total_tokens: token_delta.last_usage_total_tokens,
+        codex_last_usage_total_tokens:
+          token_delta.last_usage_total_tokens ||
+            Map.get(running_entry, :codex_last_usage_total_tokens, 0),
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
@@ -4092,7 +4094,7 @@ defmodule SymphonyElixir.Orchestrator do
         input_reported: input.reported,
         output_reported: output.reported,
         total_reported: total.reported,
-        last_usage_total_tokens: last_usage_total_tokens || total.delta
+        last_usage_total_tokens: last_usage_total_tokens
       }
     end)
   end
