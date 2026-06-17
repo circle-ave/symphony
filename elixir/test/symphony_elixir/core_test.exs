@@ -3461,6 +3461,86 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner claims rework issues before codex work" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-rework-claim-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(workspace_root)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{\"id\":1,\"result\":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-rework-claim\"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-rework-claim\"}}}'
+            printf '%s\\n' '{\"method\":\"turn/completed\"}'
+            exit 0
+            ;;
+          *)
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_assignee: "me",
+        workspace_root: workspace_root,
+        hook_before_run: "touch before-run-ran",
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-rework-claim",
+        identifier: "MT-562",
+        title: "Rework analytics implementation",
+        description: "Fix the previous attempt.",
+        state: "Rework",
+        url: "https://example.org/issues/MT-562",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, self(),
+                 max_turns: 1,
+                 issue_state_fetcher: fn ["issue-rework-claim"] ->
+                   {:ok, [%{issue | state: "Done"}]}
+                 end
+               )
+
+      assert_receive {:memory_tracker_assignee_update, "issue-rework-claim", "me"}, 500
+      assert_receive {:memory_tracker_state_update, "issue-rework-claim", "In Progress"}, 500
+
+      assert_receive {:codex_worker_update, "issue-rework-claim", %{event: :prompt_prepared, payload: %{phase: "rework"}}},
+                     500
+
+      workspace = Path.join(workspace_root, "MT-562")
+      assert File.exists?(Path.join(workspace, "before-run-ran"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "review-demo scope audit blockers continue into rework agent" do
     test_root =
       Path.join(
@@ -3620,15 +3700,17 @@ defmodule SymphonyElixir.CoreTest do
         state: "Rework",
         url: "https://example.org/issues/MT-562",
         labels: [],
+        latest_comment_body:
+          "Final process fix from live proof: scope audit was still relitigating the original broad ticket instead of recognizing this Rework pass is review/demo recipe repair. Symphony now skips scope audit when the active Rework context is review/demo repair, so the normal agent can inspect repo/workpad and repair the demo path. Re-queued in Rework.",
         active_workpad_body: """
         ## Codex Workpad
 
         ### Status
-        Waiting for reviewer-accessible demo/review details.
+        Waiting on scope audit.
 
         ### Confusions
-        - Missing exact no-setup `Open:` URL for reviewers.
-        - Missing required reviewer data/setup details for validating the analytics pipeline behavior.
+        - Is this backend pipeline only, or does it also include frontend event instrumentation?
+        - Which exact source(s) of truth and consumer surface(s) are in scope for v1?
         """
       }
 

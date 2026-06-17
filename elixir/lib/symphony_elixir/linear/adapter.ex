@@ -23,6 +23,22 @@ defmodule SymphonyElixir.Linear.Adapter do
   }
   """
 
+  @assign_issue_mutation """
+  mutation SymphonyAssignIssue($issueId: String!, $assigneeId: String!) {
+    issueUpdate(id: $issueId, input: {assigneeId: $assigneeId}) {
+      success
+    }
+  }
+  """
+
+  @viewer_query """
+  query SymphonyLinearViewer {
+    viewer {
+      id
+    }
+  }
+  """
+
   @state_lookup_query """
   query SymphonyResolveStateId($issueId: String!, $stateName: String!) {
     issue(id: $issueId) {
@@ -87,6 +103,22 @@ defmodule SymphonyElixir.Linear.Adapter do
       false -> {:error, :issue_update_failed}
       {:error, reason} -> {:error, reason}
       _ -> {:error, :issue_update_failed}
+    end
+  end
+
+  @spec assign_issue(String.t(), String.t()) :: :ok | {:error, term()}
+  def assign_issue(issue_id, assignee)
+      when is_binary(issue_id) and is_binary(assignee) do
+    with {:ok, assignee_id} <- resolve_assignee_id(assignee),
+         :ok <- ensure_issue_in_selected_project(issue_id),
+         {:ok, response} <-
+           client_module().graphql(@assign_issue_mutation, %{issueId: issue_id, assigneeId: assignee_id}),
+         true <- get_in(response, ["data", "issueUpdate", "success"]) == true do
+      :ok
+    else
+      false -> {:error, :issue_assign_failed}
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :issue_assign_failed}
     end
   end
 
@@ -182,6 +214,30 @@ defmodule SymphonyElixir.Linear.Adapter do
     else
       {:error, reason} -> {:error, reason}
       _ -> {:error, :state_not_found}
+    end
+  end
+
+  defp resolve_assignee_id(assignee) when is_binary(assignee) do
+    case assignee |> String.trim() do
+      "" -> {:error, :missing_linear_assignee}
+      "me" -> resolve_viewer_id()
+      assignee_id -> {:ok, assignee_id}
+    end
+  end
+
+  defp resolve_viewer_id do
+    case client_module().graphql(@viewer_query, %{}) do
+      {:ok, %{"data" => %{"viewer" => %{"id" => viewer_id}}}} when is_binary(viewer_id) ->
+        case String.trim(viewer_id) do
+          "" -> {:error, :missing_linear_viewer_identity}
+          trimmed -> {:ok, trimmed}
+        end
+
+      {:ok, _body} ->
+        {:error, :missing_linear_viewer_identity}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

@@ -439,7 +439,10 @@ defmodule SymphonyElixir.ScopeAudit do
         [
           "review recipe",
           "demo recipe",
+          "review/demo",
+          "demo/review",
           "review demo",
+          "demo path",
           "functional demo",
           "reviewer-accessible",
           "reviewer-reachable",
@@ -462,6 +465,8 @@ defmodule SymphonyElixir.ScopeAudit do
           "pull request",
           "points at pr",
           "pr instead",
+          "repair",
+          "rework",
           "cannot be derived",
           "can be derived"
         ],

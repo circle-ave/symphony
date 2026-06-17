@@ -112,7 +112,7 @@ Status route:
 - `In Progress`: continue from the current workpad.
 - `Human Review`: wait unless explicitly processing review.
 - `Merging`: run the `land` skill loop.
-- `Rework`: reset approach and rework.
+- `Rework`: claim the issue as the configured agent if possible, move it to `In Progress`, then reset approach and rework.
 - terminal states: do nothing.
 
 {% if phase == "idle" %}
@@ -164,6 +164,7 @@ The issue is terminal. Do not modify anything. Report that no action was require
 ## Rework Packet
 
 - Treat `Rework` as an approach reset, not a tiny patch.
+- When this run starts from `Rework`, the orchestrator should already have claimed the issue as the configured agent and moved it to `In Progress`; keep using this rework packet for the approach.
 - Re-read the issue body and all human comments. Record what will be different this attempt.
 - Reuse and rewrite the existing `## Codex Workpad`; preserve only still-useful historical facts in compact notes.
 - Sync the configured development branch `{{ repository.branch }}` from `origin/{{ repository.branch }}`. Do not create a feature branch.
@@ -175,7 +176,7 @@ The issue is terminal. Do not modify anything. Report that no action was require
 
 Startup order:
 1. Fetch the current issue state.
-2. If `Todo`, immediately move to `In Progress`.
+2. If `Todo`, immediately move to `In Progress`. If `Rework`, claim the issue as the configured agent if possible and move it to `In Progress` before work.
 3. Find/create one active `## Codex Workpad`; ignore resolved comments.
 4. Reconcile existing checklist state against the issue body, all active human comments, and linked review context before new edits. Existing workpad acceptance criteria are evidence, not authority.
 5. Record environment stamp as `<host>:<abs-workdir>@<short-sha>`.

@@ -238,12 +238,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
     assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
+    assert :ok = SymphonyElixir.Tracker.assign_issue("issue-1", "agent-1")
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
+    assert_receive {:memory_tracker_assignee_update, "issue-1", "agent-1"}
 
     Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
     assert :ok = Memory.create_comment("issue-1", "quiet")
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
+    assert :ok = Memory.assign_issue("issue-1", "quiet-agent")
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
@@ -385,6 +388,65 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_receive {:graphql_called, update_issue_query, %{issueId: "issue-1", stateId: "state-1"}}
 
     assert update_issue_query =~ "issueUpdate"
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+    )
+
+    assert :ok = Adapter.assign_issue("issue-1", "agent-1")
+    assert_receive {:graphql_called, assign_issue_query, %{issueId: "issue-1", assigneeId: "agent-1"}}
+    assert assign_issue_query =~ "assigneeId"
+
+    flush_graphql_calls()
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"viewer" => %{"id" => "agent-viewer"}}}},
+        {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+      ]
+    )
+
+    assert :ok = Adapter.assign_issue("issue-1", "me")
+    {viewer_query, %{}} = assert_receive_graphql_call(fn query, variables -> variables == %{} and query =~ "viewer" end)
+    assert viewer_query =~ "viewer"
+
+    assert_receive_graphql_call(fn _query, variables ->
+      variables == %{issueId: "issue-1", assigneeId: "agent-viewer"}
+    end)
+
+    assert {:error, :missing_linear_assignee} = Adapter.assign_issue("issue-1", " ")
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"viewer" => %{"id" => " "}}}}
+    )
+
+    assert {:error, :missing_linear_viewer_identity} = Adapter.assign_issue("issue-1", "me")
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"viewer" => %{}}}}
+    )
+
+    assert {:error, :missing_linear_viewer_identity} = Adapter.assign_issue("issue-1", "me")
+
+    Process.put({FakeLinearClient, :graphql_result}, {:error, :viewer_down})
+    assert {:error, :viewer_down} = Adapter.assign_issue("issue-1", "me")
+
+    Process.put(
+      {FakeLinearClient, :graphql_result},
+      {:ok, %{"data" => %{"issueUpdate" => %{"success" => false}}}}
+    )
+
+    assert {:error, :issue_assign_failed} = Adapter.assign_issue("issue-1", "agent-1")
+
+    Process.put({FakeLinearClient, :graphql_result}, {:error, :assign_down})
+    assert {:error, :assign_down} = Adapter.assign_issue("issue-1", "agent-1")
+
+    Process.put({FakeLinearClient, :graphql_result}, :unexpected)
+    assert {:error, :issue_assign_failed} = Adapter.assign_issue("issue-1", "agent-1")
 
     Process.put(
       {FakeLinearClient, :graphql_results},
@@ -1229,6 +1291,27 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition not met in time")
+
+  defp flush_graphql_calls do
+    receive do
+      {:graphql_called, _query, _variables} -> flush_graphql_calls()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp assert_receive_graphql_call(matcher) when is_function(matcher, 2) do
+    receive do
+      {:graphql_called, query, variables} ->
+        if matcher.(query, variables) do
+          {query, variables}
+        else
+          assert_receive_graphql_call(matcher)
+        end
+    after
+      500 -> flunk("expected matching GraphQL call")
+    end
+  end
 
   defp ensure_workflow_store_running do
     if Process.whereis(WorkflowStore) do
