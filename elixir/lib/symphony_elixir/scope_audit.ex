@@ -80,6 +80,13 @@ defmodule SymphonyElixir.ScopeAudit do
 
   def reworkable_review_recipe_blocker?(%Result{}), do: false
 
+  @spec reworkable_review_recipe_context?(Issue.t()) :: boolean()
+  def reworkable_review_recipe_context?(%Issue{} = issue) do
+    issue
+    |> issue_context_text()
+    |> review_recipe_repair_text?()
+  end
+
   defp do_run(issue, workspace, codex_update_recipient, opts, audit, settings) do
     prompt = audit_prompt(issue, audit)
 
@@ -320,9 +327,12 @@ defmodule SymphonyElixir.ScopeAudit do
   end
 
   defp audit_enabled?(audit, %Issue{} = issue, opts) do
+    phase = PromptBuilder.phase_for_issue(issue)
+
     audit.enabled == true and
       Keyword.get(opts, :comment_reply, false) == false and
-      PromptBuilder.phase_for_issue(issue) in ["execution", "rework"]
+      phase in ["execution", "rework"] and
+      not (phase == "rework" and reworkable_review_recipe_context?(issue))
   end
 
   defp audit_command(audit, settings) do
@@ -411,6 +421,13 @@ defmodule SymphonyElixir.ScopeAudit do
     ]
     |> Kernel.++(result.evidence || [])
     |> Kernel.++(result.confusions || [])
+    |> Enum.filter(&is_binary/1)
+    |> Enum.join("\n")
+    |> String.downcase()
+  end
+
+  defp issue_context_text(%Issue{} = issue) do
+    [issue.latest_comment_body, issue.active_workpad_body]
     |> Enum.filter(&is_binary/1)
     |> Enum.join("\n")
     |> String.downcase()
