@@ -42,28 +42,28 @@ hooks:
 agent:
   max_concurrent_agents: 6
   max_turns: 5
-  max_turn_tokens: 90000
-  max_run_tokens: 180000
+  max_turn_tokens: 50000
+  max_run_tokens: 90000
   scope_audit:
     enabled: true
-    command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
+    command: codex --config shell_environment_policy.inherit=all --config tool_output_token_limit=4000 --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
     max_tokens: 40000
     timeout_ms: 300000
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
+  command: codex --config shell_environment_policy.inherit=all --config tool_output_token_limit=4000 --config 'model="gpt-5.5"' --config model_reasoning_effort=medium app-server
   model_router:
     enabled: true
-    router_command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
+    router_command: codex --config shell_environment_policy.inherit=all --config tool_output_token_limit=4000 --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
     default_profile: standard
     profiles:
       fast:
-        command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
+        command: codex --config shell_environment_policy.inherit=all --config tool_output_token_limit=4000 --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
         description: Small docs, config, or mechanical edits with low ambiguity.
       standard:
-        command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
+        command: codex --config shell_environment_policy.inherit=all --config tool_output_token_limit=4000 --config 'model="gpt-5.5"' --config model_reasoning_effort=medium app-server
         description: Normal implementation work with moderate ambiguity.
       deep:
-        command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
+        command: codex --config shell_environment_policy.inherit=all --config tool_output_token_limit=4000 --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
         description: Architecture, migrations, failed retries, rework, or risky user-facing changes.
   approval_policy: never
   read_timeout_ms: 30000
@@ -101,6 +101,7 @@ Core rules:
 - Clarification is allowed only by parking the issue: unresolved product, scope, acceptance, or target-surface ambiguity must be recorded in the workpad and the issue must be moved to `Waiting`, not guessed through implementation.
 - Work only in the provided repository copy.
 - Linear access is available through Linear MCP or `linear_graphql`; use injected issue/workpad context first, and fetch only missing, issue-scoped fields with small pagination.
+- Keep shell output bounded: use targeted paths/patterns and `max_output_tokens <= 5000`; avoid repo-root `rg --files`, `find`, `ls -R`, or broad `rg -n` searches that can return hundreds of lines. If output is huge or truncated, stop and rerun a narrower command.
 - If the issue or latest human comment references a Jira browse link or imported Jira attachment note, call `jira_issue_attachments` before deciding scope or implementing. Use the downloaded local attachment paths as source evidence.
 - Use exactly one active `## Codex Workpad` comment as the progress source of truth.
 - Keep final replies to completed actions and blockers only. No user next steps.
