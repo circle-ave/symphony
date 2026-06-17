@@ -57,6 +57,7 @@ defmodule SymphonyElixir.AgentRunner do
               end
 
             :parked ->
+              send_worker_result_info(codex_update_recipient, issue, :scope_audit_parked)
               :ok
 
             {:error, reason} ->
@@ -100,6 +101,14 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
+
+  defp send_worker_result_info(recipient, %Issue{id: issue_id}, result)
+       when is_binary(issue_id) and is_pid(recipient) do
+    send(recipient, {:worker_result_info, issue_id, result})
+    :ok
+  end
+
+  defp send_worker_result_info(_recipient, _issue, _result), do: :ok
 
   defp maybe_load_resume_checkpoint(opts, workspace, %Issue{} = issue) when is_binary(workspace) do
     cond do

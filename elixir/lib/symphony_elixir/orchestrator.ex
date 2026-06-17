@@ -222,6 +222,20 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  def handle_info({:worker_result_info, issue_id, worker_result}, %{running: running} = state)
+      when is_binary(issue_id) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        updated_running_entry = Map.put(running_entry, :worker_result, worker_result)
+
+        notify_dashboard()
+        {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+    end
+  end
+
   def handle_info(
         {:codex_worker_update, issue_id, %{event: _, timestamp: _} = update},
         %{running: running} = state
@@ -273,21 +287,30 @@ defmodule SymphonyElixir.Orchestrator do
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
     case resource_gate_block(running_entry) do
       nil ->
-        if input_required_blocker?(running_entry) do
-          block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
-        else
-          Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+        cond do
+          Map.get(running_entry, :worker_result) == :scope_audit_parked ->
+            Logger.info("Agent task parked by scope audit for issue_id=#{issue_id} session_id=#{session_id}")
 
-          state
-          |> maybe_mark_comment_reply_seen(running_entry)
-          |> complete_issue(issue_id)
-          |> schedule_issue_retry(issue_id, 1, %{
-            identifier: running_entry.identifier,
-            issue_url: running_entry.issue.url,
-            delay_type: :continuation,
-            worker_host: Map.get(running_entry, :worker_host),
-            workspace_path: Map.get(running_entry, :workspace_path)
-          })
+            state
+            |> complete_issue(issue_id)
+            |> release_issue_claim(issue_id)
+
+          input_required_blocker?(running_entry) ->
+            block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
+
+          true ->
+            Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+
+            state
+            |> maybe_mark_comment_reply_seen(running_entry)
+            |> complete_issue(issue_id)
+            |> schedule_issue_retry(issue_id, 1, %{
+              identifier: running_entry.identifier,
+              issue_url: running_entry.issue.url,
+              delay_type: :continuation,
+              worker_host: Map.get(running_entry, :worker_host),
+              workspace_path: Map.get(running_entry, :workspace_path)
+            })
         end
 
       gate ->
