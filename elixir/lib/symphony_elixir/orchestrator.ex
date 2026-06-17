@@ -847,11 +847,48 @@ defmodule SymphonyElixir.Orchestrator do
   defp waiting_issue_has_clarification_blocker?(%Issue{active_workpad_body: body}) when is_binary(body) do
     case workpad_section(body, "Confusions") do
       nil -> false
-      section -> String.trim(section) != ""
+      section -> String.trim(section) != "" and !review_demo_rework_confusion?(section)
     end
   end
 
   defp waiting_issue_has_clarification_blocker?(_issue), do: false
+
+  defp review_demo_rework_confusion?(section) when is_binary(section) do
+    section = String.downcase(section)
+
+    review_recipe_context? =
+      Enum.any?(
+        [
+          "review recipe",
+          "demo recipe",
+          "review demo",
+          "functional demo",
+          "reviewer-accessible",
+          "reviewer-reachable",
+          "open:"
+        ],
+        &String.contains?(section, &1)
+      )
+
+    repair_signal? =
+      Enum.any?(
+        [
+          "missing",
+          "no setup",
+          "no-setup",
+          "url",
+          "login",
+          "credential",
+          "localhost",
+          "source diff",
+          "cannot be derived",
+          "can be derived"
+        ],
+        &String.contains?(section, &1)
+      )
+
+    review_recipe_context? and repair_signal?
+  end
 
   defp workpad_section(body, heading) when is_binary(body) and is_binary(heading) do
     pattern = ~r/(?:^|\n)###\s+#{Regex.escape(heading)}\s*\n(?<section>.*?)(?=\n###\s+|\z)/s

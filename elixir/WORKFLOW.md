@@ -146,7 +146,7 @@ The issue is terminal. Do not modify anything. Report that no action was require
 - Handle only the latest actionable human comment. Do not replay the normal implementation workflow.
 - If the comment asks for review recipe, demo recipe, validation-note, or workpad repair only, update the one active `## Codex Workpad` and reply with the outcome. Do not edit code, rerun full validation, publish branch changes, inspect Jira attachments, or dump browser/source responses unless the comment specifically requires fresh evidence.
 - For review recipe repairs, preserve valid implementation/validation history, move PR/check/source metadata to `Validation` or `Notes`, and rewrite `Demo / Review Recipe` so `Open:` is an exact reviewer-reachable app/runtime/API/dashboard URL, `Login:` includes credentials when needed, and `Verify:` states observable ticket behavior.
-- If no functional demo can be derived from the issue, active workpad, existing validation evidence, or directly linked artifacts, record the missing information in `Confusions` and move the issue to `Waiting` instead of guessing.
+- If no functional demo can be derived from the issue, active workpad, existing validation evidence, or directly linked artifacts, record the missing information in `Confusions` and move the issue to `Rework` so a normal agent can inspect the repo and repair the demo recipe.
 - If the comment requires code changes, move the issue to `Rework` before changing files, then stop this reply turn.
 - Include a concise reply to the latest comment and append the hidden Symphony comment marker.
 {% endif %}

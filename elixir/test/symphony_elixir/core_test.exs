@@ -1328,7 +1328,7 @@ defmodule SymphonyElixir.CoreTest do
     refute_receive {:memory_tracker_comment, "issue-waiting-human-blocker", _body}, 300
   end
 
-  test "waiting issues with active workpad confusions stay in Waiting" do
+  test "waiting issues with product-scope workpad confusions stay in Waiting" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1338,21 +1338,21 @@ defmodule SymphonyElixir.CoreTest do
     issue = %Issue{
       id: "issue-waiting-confusions",
       identifier: "MT-706",
-      title: "Waiting for review details",
+      title: "Waiting for product scope",
       state: "Waiting",
       blocked_by: [],
       active_workpad_body: """
       ## Codex Workpad
 
       ### Status
-      Waiting for reviewer-accessible demo details.
+      Waiting for product scope.
 
       ### Confusions
-      - Missing exact no-setup `Open:` URL.
-      - Missing reviewer login details if auth is required.
+      - Which modules should this feature cover?
+      - What demo behavior should be accepted as complete?
 
       ### Demo / Review Recipe
-      No reviewer-accessible demo can be derived yet.
+      Blocked until product scope is clarified.
       """
     }
 
@@ -1382,6 +1382,65 @@ defmodule SymphonyElixir.CoreTest do
       assert state.waiting_blocker_monitor_status.recovered_count == 0
       refute_receive {:memory_tracker_state_update, "issue-waiting-confusions", _state}, 300
       refute_receive {:memory_tracker_comment, "issue-waiting-confusions", _body}, 300
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "waiting issues with review-demo workpad confusions recover to Rework" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-waiting-demo-rework-#{System.unique_integer([:positive])}"
+      )
+
+    issue = %Issue{
+      id: "issue-waiting-demo-rework",
+      identifier: "MT-707",
+      title: "Waiting for review details",
+      state: "Waiting",
+      blocked_by: [],
+      active_workpad_body: """
+      ## Codex Workpad
+
+      ### Status
+      Waiting for reviewer-accessible demo details.
+
+      ### Confusions
+      - Missing exact no-setup `Open:` URL for the review demo.
+
+      ### Demo / Review Recipe
+      No reviewer-accessible demo can be derived yet.
+      """
+    }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: test_root,
+      tracker_active_states: ["Rework", "In Progress"],
+      tracker_waiting_state: "Waiting",
+      poll_interval_ms: 30_000
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    try do
+      assert {:ok, state} =
+               Orchestrator.run_waiting_blocker_monitor_for_test(%Orchestrator.State{
+                 running: %{},
+                 claimed: MapSet.new(),
+                 blocked: %{},
+                 retry_attempts: %{},
+                 max_concurrent_agents: 2,
+                 poll_interval_ms: 30_000
+               })
+
+      assert state.waiting_blocker_monitor_status.scanned_count == 1
+      assert state.waiting_blocker_monitor_status.recovered_count == 1
+      assert_receive {:memory_tracker_state_update, "issue-waiting-demo-rework", "Rework"}, 500
+      assert_receive {:memory_tracker_comment, "issue-waiting-demo-rework", body}, 500
+      assert body =~ "returning this issue to `Rework`"
     after
       File.rm_rf(test_root)
     end
@@ -3233,6 +3292,8 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "update the one active `## Codex Workpad`"
     assert prompt =~ "rewrite `Demo / Review Recipe`"
     assert prompt =~ "exact reviewer-reachable app/runtime/API/dashboard URL"
+    assert prompt =~ "move the issue to `Rework`"
+    refute prompt =~ "move the issue to `Waiting` instead of guessing"
     refute prompt =~ "## Execution Packet"
     refute prompt =~ "Run the Scope Confidence Gate"
   end

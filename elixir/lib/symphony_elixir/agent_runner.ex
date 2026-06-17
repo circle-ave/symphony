@@ -310,7 +310,7 @@ defmodule SymphonyElixir.AgentRunner do
     - Reply directly to the latest comment. Do not start unrelated implementation work.
     - If the comment asks only for review recipe, demo recipe, validation-note, or workpad repair, update the existing workpad/comment only; do not run shell commands, code search, implementation, PR publishing, Jira attachment fetches, or browser-heavy checks. Treat the issue, latest comment, and active workpad below as the complete context for that repair.
     - If the comment requests code changes, move the issue to `Rework` before changing files, then follow the normal workflow.
-    - If no functional review/demo can be derived from the issue, active workpad, existing validation evidence, or directly linked artifacts, add the unresolved question under `### Confusions` and set `state_name` to `Waiting`.
+    - If no functional review/demo can be derived from the issue, active workpad, existing validation evidence, or directly linked artifacts, set `state_name` to `Rework` so a normal agent can inspect the repo and repair the demo recipe.
     - Use the `linear_comment_reply` tool exactly once to save the complete revised workpad and reply. Do not call raw Linear GraphQL or any shell/exec tool.
     - The tool appends this hidden marker automatically when absent: #{marker}
 
