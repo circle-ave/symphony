@@ -106,7 +106,7 @@ repositories:
     - id: app
       name: App
       url: git@github.com:your-org/your-repo.git
-      branch: main
+      branch: develop
       tracker:
         project_slug: "..."
 hooks:
@@ -152,6 +152,7 @@ Notes:
   identifier, title, and body.
 - Use `repositories.allowed` to opt in the exact repositories Symphony may clone. New workspaces are
   created under `workspace.root/<repository-id>/<issue-id>`.
+- Repository `branch` defaults to `develop` when omitted.
 - `repositories.selected` chooses the active repository. The dashboard controls can switch between
   configured repositories for future dispatches.
 - A repository can provide its own `tracker.project_slug`; this keeps tracker board selection tied to

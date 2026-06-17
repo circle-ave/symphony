@@ -89,6 +89,50 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace clones develop by default when repository branch is omitted" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-selected-repo-default-branch-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source repo")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "main branch\n")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "main"])
+      System.cmd("git", ["-C", template_repo, "switch", "-c", "develop"])
+      File.write!(Path.join(template_repo, "README.md"), "develop branch\n")
+      System.cmd("git", ["-C", template_repo, "commit", "-am", "develop"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_project_slug: nil,
+        workspace_root: workspace_root,
+        repositories_selected: "repo-one",
+        repositories_allowed: [
+          %{
+            id: "repo-one",
+            name: "Repo One",
+            url: template_repo,
+            tracker: %{project_slug: "repo-one-project"}
+          }
+        ]
+      )
+
+      assert Config.settings!().repositories.allowed |> List.first() |> Map.get(:branch) == "develop"
+      assert {:ok, workspace} = Workspace.create_for_issue("S-2")
+      assert File.read!(Path.join(workspace, "README.md")) == "develop branch\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(

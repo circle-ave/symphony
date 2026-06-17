@@ -49,6 +49,18 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     end)
   end
 
+  test "skips PR cleanup for shared development branches" do
+    with_fake_gh(fn log_path ->
+      output =
+        capture_io(fn ->
+          BeforeRemove.run(["--branch", "develop"])
+        end)
+
+      assert output =~ "Skipping PR cleanup for shared branch develop"
+      assert File.read!(log_path) == ""
+    end)
+  end
+
   test "uses current branch for lookup when branch option is omitted" do
     with_fake_gh_and_git(
       """

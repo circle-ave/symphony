@@ -39,8 +39,6 @@ hooks:
     if command -v mise >/dev/null 2>&1; then
       cd elixir && mise trust && mise exec -- mix deps.get
     fi
-  before_remove: |
-    cd elixir && mise exec -- mix workspace.before_remove
 agent:
   max_concurrent_agents: 6
   max_turns: 5
@@ -133,7 +131,7 @@ The issue is terminal. Do not modify anything. Report that no action was require
 ## Human Review Packet
 
 - Do not code or change ticket content unless explicitly asked to process the review.
-- Poll for human/bot review updates and GitHub PR comments.
+- Poll for human/bot review updates and linked implementation comments.
 - If processing review, use exactly one active `## Codex Workpad`, extract `Demo / Review Recipe`, run the visible browser review path, check console warnings/errors, and report the result for the reviewer.
 - Reject review recipes whose primary `Open:` target is a PR, source diff, CI run, Linear issue, Jira issue, or other project tracker. Those links are validation evidence, not a functional demo.
 - Reject review recipes that require reviewer setup, local services, localhost/loopback URLs, unpublished branches, seed scripts, or guessing. `Open:` must be an exact reviewer-reachable app/runtime/API/dashboard URL, and required login/data details must be in the workpad.
@@ -146,7 +144,7 @@ The issue is terminal. Do not modify anything. Report that no action was require
 ## Comment Reply Packet
 
 - Handle only the latest actionable human comment. Do not replay the normal implementation workflow.
-- If the comment asks for review recipe, demo recipe, validation-note, or workpad repair only, update the one active `## Codex Workpad` and reply with the outcome. Do not edit code, rerun full validation, republish the PR, inspect Jira attachments, or dump browser/source responses unless the comment specifically requires fresh evidence.
+- If the comment asks for review recipe, demo recipe, validation-note, or workpad repair only, update the one active `## Codex Workpad` and reply with the outcome. Do not edit code, rerun full validation, publish branch changes, inspect Jira attachments, or dump browser/source responses unless the comment specifically requires fresh evidence.
 - For review recipe repairs, preserve valid implementation/validation history, move PR/check/source metadata to `Validation` or `Notes`, and rewrite `Demo / Review Recipe` so `Open:` is an exact reviewer-reachable app/runtime/API/dashboard URL, `Login:` includes credentials when needed, and `Verify:` states observable ticket behavior.
 - If no functional demo can be derived from the issue, active workpad, existing validation evidence, or directly linked artifacts, record the missing information in `Confusions` and move the issue to `Waiting` instead of guessing.
 - If the comment requires code changes, move the issue to `Rework` before changing files, then stop this reply turn.
@@ -167,10 +165,9 @@ The issue is terminal. Do not modify anything. Report that no action was require
 
 - Treat `Rework` as an approach reset, not a tiny patch.
 - Re-read the issue body and all human comments. Record what will be different this attempt.
-- Close the existing PR tied to the issue.
 - Reuse and rewrite the existing `## Codex Workpad`; preserve only still-useful historical facts in compact notes.
-- Create a fresh branch from `origin/main`.
-- Then follow the execution packet from workpad creation through validation, PR, and `Human Review`.
+- Sync the configured development branch `{{ repository.branch }}` from `origin/{{ repository.branch }}`. Do not create a feature branch.
+- Then follow the execution packet from workpad creation through validation and `Human Review`.
 {% endif %}
 
 {% if phase == "execution" %}
@@ -180,7 +177,7 @@ Startup order:
 1. Fetch the current issue state.
 2. If `Todo`, immediately move to `In Progress`.
 3. Find/create one active `## Codex Workpad`; ignore resolved comments.
-4. Reconcile existing checklist state against the issue body, all active human comments, and linked PR/review context before new edits. Existing workpad acceptance criteria are evidence, not authority.
+4. Reconcile existing checklist state against the issue body, all active human comments, and linked review context before new edits. Existing workpad acceptance criteria are evidence, not authority.
 5. Record environment stamp as `<host>:<abs-workdir>@<short-sha>`.
 6. Add/update `Scope Confidence`, `Plan`, `Acceptance Criteria`, `Validation`, `Demo / Review Recipe`, `Notes`, and `Confusions`.
 7. Run the Scope Confidence Gate before code changes.
@@ -201,9 +198,9 @@ Execution loop:
 - Every completed issue needs a functional `Demo / Review Recipe` that requires no reviewer setup. For backend, data, analytics, pipeline, or workflow work, publish or identify the app/runtime route, review environment, API endpoint, CLI command output artifact, or dashboard that demonstrates the ticket behavior. Do not use the PR, source diff, CI run, Linear issue, Jira issue, localhost, or an unpublished branch as the primary `Open:` target.
 - Temporary local proof edits are allowed only for verification and must be reverted before commit.
 - Before each push, rerun the required validation and fix failures.
-- Merge latest `origin/main`, resolve conflicts, rerun checks, push, create/update PR, attach PR URL to Linear, and ensure the PR has label `symphony`.
+- Rebase or merge latest `origin/{{ repository.branch }}`, resolve conflicts, rerun checks, commit on `{{ repository.branch }}`, and push that same branch. Do not create a feature branch or PR unless a human explicitly asks for one.
 
-PR feedback sweep before `Human Review`:
+Review feedback sweep before `Human Review`:
 - Gather top-level comments, inline comments, and review summaries.
 - Treat every actionable human or bot comment as blocking until code/test/docs address it or a justified pushback reply is posted.
 - Re-run validation after feedback changes and repeat until no actionable comments remain.
@@ -214,8 +211,8 @@ Completion bar before `Human Review`:
 - Required tests/validation are green for the latest commit.
 - User-facing work has a passing independent acceptance review and current no-setup `Demo / Review Recipe`; include login credentials when required, otherwise `Login: not required`.
 - Non-user-facing work may mark independent browser acceptance as not applicable, but its `Demo / Review Recipe` must still demonstrate runtime/app behavior through an exact reviewer-reachable URL or artifact and must not be a PR/status-check/local-setup inspection recipe.
-- PR checks are green, branch is pushed, PR is linked, and PR metadata is present.
-- Review readiness proof includes `reviewRecipeAccessible: true` and `reviewRecipeUrl` matching the workpad `Open:` target.
+- Shared development branch commit is pushed and required checks are green.
+- Review readiness proof includes `developmentBranchReviewed: true`, `sharedBranchCommitted: true`, `targetContainsSharedBranchCommit: true`, `reviewBranch: "{{ repository.branch }}"`, `reviewRecipeAccessible: true`, and `reviewRecipeUrl` matching the workpad `Open:` target.
 - Only then move to `Human Review`.
 {% endif %}
 

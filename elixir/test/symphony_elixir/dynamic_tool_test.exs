@@ -426,10 +426,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "functionalReviewRecipePassed" => true,
         "reviewRecipeAccessible" => true,
         "reviewRecipeUrl" => "https://review.example.test/MT-1",
-        "mainBranchReviewed" => true,
-        "pullRequestMerged" => true,
-        "targetContainsMergedPr" => true,
-        "reviewBranch" => "main",
+        "developmentBranchReviewed" => true,
+        "sharedBranchCommitted" => true,
+        "targetContainsSharedBranchCommit" => true,
+        "reviewBranch" => "develop",
         "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true,
@@ -473,10 +473,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "functionalReviewRecipePassed" => true,
         "reviewRecipeAccessible" => true,
         "reviewRecipeUrl" => "https://review.example.test/MT-1",
-        "mainBranchReviewed" => true,
-        "pullRequestMerged" => true,
-        "targetContainsMergedPr" => true,
-        "reviewBranch" => "main",
+        "developmentBranchReviewed" => true,
+        "sharedBranchCommitted" => true,
+        "targetContainsSharedBranchCommit" => true,
+        "reviewBranch" => "develop",
         "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true
@@ -526,10 +526,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "functionalReviewRecipePassed" => true,
         "reviewRecipeAccessible" => true,
         "reviewRecipeUrl" => "https://review.example.test/MT-1",
-        "mainBranchReviewed" => true,
-        "pullRequestMerged" => true,
-        "targetContainsMergedPr" => true,
-        "reviewBranch" => "main",
+        "developmentBranchReviewed" => true,
+        "sharedBranchCommitted" => true,
+        "targetContainsSharedBranchCommit" => true,
+        "reviewBranch" => "develop",
         "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true,
@@ -572,10 +572,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "functionalReviewRecipePassed" => true,
         "reviewRecipeAccessible" => true,
         "reviewRecipeUrl" => "https://review.example.test/MT-1",
-        "mainBranchReviewed" => true,
-        "pullRequestMerged" => true,
-        "targetContainsMergedPr" => true,
-        "reviewBranch" => "main",
+        "developmentBranchReviewed" => true,
+        "sharedBranchCommitted" => true,
+        "targetContainsSharedBranchCommit" => true,
+        "reviewBranch" => "develop",
         "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true
@@ -619,10 +619,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "functionalReviewRecipePassed" => true,
         "reviewRecipeAccessible" => true,
         "reviewRecipeUrl" => "https://review.example.test/MT-1",
-        "mainBranchReviewed" => true,
-        "pullRequestMerged" => true,
-        "targetContainsMergedPr" => true,
-        "reviewBranch" => "main",
+        "developmentBranchReviewed" => true,
+        "sharedBranchCommitted" => true,
+        "targetContainsSharedBranchCommit" => true,
+        "reviewBranch" => "develop",
         "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true,
@@ -670,9 +670,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "functionalReviewRecipePassed" => true,
         "reviewRecipeAccessible" => true,
         "reviewRecipeUrl" => "https://review.example.test/MT-1",
-        "mainBranchReviewed" => true,
-        "pullRequestMerged" => true,
-        "targetContainsMergedPr" => true,
+        "developmentBranchReviewed" => true,
+        "sharedBranchCommitted" => true,
+        "targetContainsSharedBranchCommit" => true,
         "reviewBranch" => "dillon/mt-1-feature",
         "validationPassed" => true,
         "deliverableReviewPassed" => true,
@@ -698,9 +698,13 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       assert response["success"] == false
 
-      assert Jason.decode!(response["output"])["error"]["message"] ==
-               "Blocked review transition: readiness proof did not review main."
+      payload = Jason.decode!(response["output"])
 
+      assert payload["error"]["message"] ==
+               "Blocked review transition: readiness proof did not review the configured development branch."
+
+      assert payload["error"]["details"]["expectedBranch"] == "develop"
+      assert payload["error"]["details"]["reviewBranch"] == "dillon/mt-1-feature"
       assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
       refute_received {:linear_client_called, :state_update, _variables}
     end)
@@ -715,10 +719,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "issue" => "MT-1",
         "workspaceHead" => "head-123",
         "reviewReadinessCheckPassed" => true,
-        "mainBranchReviewed" => true,
-        "pullRequestMerged" => true,
-        "targetContainsMergedPr" => true,
-        "reviewBranch" => "main",
+        "developmentBranchReviewed" => true,
+        "sharedBranchCommitted" => true,
+        "targetContainsSharedBranchCommit" => true,
+        "reviewBranch" => "develop",
         "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true
@@ -764,10 +768,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "reviewRecipeAccessible" => true,
         "reviewRecipeUrl" => "http://localhost:3000/review/MT-1",
         "functionalReviewRecipePassed" => true,
-        "mainBranchReviewed" => true,
-        "pullRequestMerged" => true,
-        "targetContainsMergedPr" => true,
-        "reviewBranch" => "main",
+        "developmentBranchReviewed" => true,
+        "sharedBranchCommitted" => true,
+        "targetContainsSharedBranchCommit" => true,
+        "reviewBranch" => "develop",
         "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true
@@ -815,10 +819,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "workpadCompleted" => true,
         "reviewRecipeAccessible" => true,
         "functionalReviewRecipePassed" => true,
-        "mainBranchReviewed" => true,
-        "pullRequestMerged" => true,
-        "targetContainsMergedPr" => true,
-        "reviewBranch" => "main",
+        "developmentBranchReviewed" => true,
+        "sharedBranchCommitted" => true,
+        "targetContainsSharedBranchCommit" => true,
+        "reviewBranch" => "develop",
         "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true
@@ -865,10 +869,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "workpadCompleted" => true,
         "reviewRecipeAccessible" => true,
         "reviewRecipeUrl" => "https://review.example.test/MT-1",
-        "mainBranchReviewed" => true,
-        "pullRequestMerged" => true,
-        "targetContainsMergedPr" => true,
-        "reviewBranch" => "main",
+        "developmentBranchReviewed" => true,
+        "sharedBranchCommitted" => true,
+        "targetContainsSharedBranchCommit" => true,
+        "reviewBranch" => "develop",
         "validationPassed" => true,
         "deliverableReviewPassed" => true,
         "screenshotArtifactVerified" => true

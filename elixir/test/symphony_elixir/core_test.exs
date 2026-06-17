@@ -413,7 +413,7 @@ defmodule SymphonyElixir.CoreTest do
     repositories = Map.get(config, "repositories", %{})
     assert Map.get(repositories, "selected") == "symphony"
 
-    assert [%{"id" => "symphony", "url" => "https://github.com/openai/symphony", "tracker" => repo_tracker}] =
+    assert [%{"id" => "symphony", "url" => "https://github.com/openai/symphony", "branch" => "main", "tracker" => repo_tracker}] =
              Map.get(repositories, "allowed")
 
     assert repo_tracker["project_slug"] == "symphony-0c79b11b75ea"
@@ -422,7 +422,7 @@ defmodule SymphonyElixir.CoreTest do
     assert is_map(hooks)
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
-    assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
+    refute Map.has_key?(hooks, "before_remove")
 
     assert String.trim(prompt) != ""
     assert is_binary(Config.workflow_prompt())
@@ -3107,8 +3107,11 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Scope Confidence Gate:"
     assert prompt =~ "move the issue to `Waiting`"
     assert prompt =~ "### Scope Confidence"
-    assert prompt =~ "PR feedback sweep before `Human Review`"
+    assert prompt =~ "Review feedback sweep before `Human Review`"
     assert prompt =~ "requires no reviewer setup"
+    assert prompt =~ "developmentBranchReviewed: true"
+    assert prompt =~ "sharedBranchCommitted: true"
+    assert prompt =~ "targetContainsSharedBranchCommit: true"
     assert prompt =~ "reviewRecipeAccessible: true"
     refute prompt =~ "## Landing Packet"
     refute prompt =~ "Do not call `gh pr merge` directly"
@@ -3138,7 +3141,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Open `.codex/skills/land/SKILL.md`"
     assert prompt =~ "Do not call `gh pr merge` directly"
     refute prompt =~ "## Execution Packet"
-    refute prompt =~ "PR feedback sweep before `Human Review`"
+    refute prompt =~ "Review feedback sweep before `Human Review`"
   end
 
   test "in-repo WORKFLOW.md renders focused comment reply packet" do

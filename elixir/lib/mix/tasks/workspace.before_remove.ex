@@ -16,6 +16,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   """
 
   @default_repo "openai/symphony"
+  @shared_branches ["main", "develop", "dillon"]
 
   @impl Mix.Task
   def run(args) do
@@ -43,10 +44,17 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   defp maybe_close_open_pull_requests(_repo, nil), do: :ok
 
   defp maybe_close_open_pull_requests(repo, branch) do
-    if gh_available?() and gh_authenticated?() do
-      repo
-      |> list_open_pull_request_numbers(branch)
-      |> Enum.each(&close_pull_request(repo, branch, &1))
+    cond do
+      branch in @shared_branches ->
+        Mix.shell().info("Skipping PR cleanup for shared branch #{branch}")
+
+      gh_available?() and gh_authenticated?() ->
+        repo
+        |> list_open_pull_request_numbers(branch)
+        |> Enum.each(&close_pull_request(repo, branch, &1))
+
+      true ->
+        :ok
     end
 
     :ok

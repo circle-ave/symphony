@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Config.Schema do
   @primary_key false
 
   @type t :: %__MODULE__{}
+  @default_repository_branch "develop"
 
   defmodule StringOrMap do
     @moduledoc false
@@ -696,7 +697,7 @@ defmodule SymphonyElixir.Config.Schema do
       | id: normalize_optional_string(repository.id),
         name: normalize_optional_string(repository.name),
         url: resolve_optional_string(repository.url),
-        branch: normalize_optional_string(repository.branch),
+        branch: repository_branch(repository.branch),
         setup: normalize_optional_string(repository.setup),
         tracker: %{
           tracker
@@ -704,6 +705,10 @@ defmodule SymphonyElixir.Config.Schema do
             assignee: resolve_secret_setting(tracker.assignee, nil)
         }
     }
+  end
+
+  defp repository_branch(branch) do
+    normalize_optional_string(branch) || @default_repository_branch
   end
 
   defp merge_selected_repository_tracker(tracker, repositories) do

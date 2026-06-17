@@ -832,9 +832,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "reviewReadinessCheckPassed",
       "workpadCompleted",
       "reviewRecipeAccessible",
-      "mainBranchReviewed",
-      "pullRequestMerged",
-      "targetContainsMergedPr",
+      "developmentBranchReviewed",
+      "sharedBranchCommitted",
+      "targetContainsSharedBranchCommit",
       "validationPassed",
       "deliverableReviewPassed"
     ]
@@ -887,12 +887,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp validate_review_branch(proof) do
-    if proof_review_branch(proof) == "main" do
+    expected_branch = development_branch()
+
+    if proof_review_branch(proof) == expected_branch do
       :ok
     else
-      review_transition_error("Blocked review transition: readiness proof did not review main.", %{
+      review_transition_error("Blocked review transition: readiness proof did not review the configured development branch.", %{
         "path" => proof["_path"],
-        "reviewBranch" => proof_review_branch(proof)
+        "reviewBranch" => proof_review_branch(proof),
+        "expectedBranch" => expected_branch
       })
     end
   end
@@ -943,7 +946,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp missing_acceptance_agent_review(review_path) do
     review_transition_error("Blocked review transition: missing independent acceptance agent proof.", %{
       "path" => review_path,
-      "requiredEvidence" => "Run an observe-only browser acceptance review on the live main deployment and record a pass verdict before review."
+      "requiredEvidence" => "Run an observe-only browser acceptance review on the live #{development_branch()} deployment and record a pass verdict before review."
     })
   end
 
@@ -1138,6 +1141,19 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp proof_review_branch(proof) do
     proof_value(proof, "reviewBranch") || proof_value(proof, "expectedBranch")
+  end
+
+  defp development_branch do
+    case Config.selected_repository() do
+      %{branch: branch} when is_binary(branch) ->
+        case String.trim(branch) do
+          "" -> "develop"
+          trimmed -> trimmed
+        end
+
+      _ ->
+        "develop"
+    end
   end
 
   defp proof_user_facing?(proof) do
