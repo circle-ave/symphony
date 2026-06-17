@@ -2119,6 +2119,7 @@ defmodule SymphonyElixir.Orchestrator do
             codex_output_tokens: 0,
             codex_total_tokens: 0,
             codex_turn_base_total_tokens: 0,
+            codex_last_delta_total_tokens: 0,
             codex_last_reported_input_tokens: 0,
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
@@ -3770,6 +3771,7 @@ defmodule SymphonyElixir.Orchestrator do
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
         codex_total_tokens: codex_total_tokens + token_delta.total_tokens,
         codex_turn_base_total_tokens: if(new_turn?, do: codex_total_tokens, else: codex_turn_base_total_tokens),
+        codex_last_delta_total_tokens: token_delta.total_tokens,
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
@@ -3816,7 +3818,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp token_budget_exceeded(running_entry, agent_config) when is_map(running_entry) do
     run_tokens = Map.get(running_entry, :codex_total_tokens, 0)
-    turn_tokens = current_turn_tokens(running_entry)
+    turn_tokens = latest_token_event_tokens(running_entry)
 
     max_turn_tokens = effective_max_turn_tokens(running_entry, agent_config)
 
@@ -3853,8 +3855,16 @@ defmodule SymphonyElixir.Orchestrator do
       input_tokens: Map.get(running_entry, :codex_input_tokens, 0),
       output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
       total_tokens: Map.get(running_entry, :codex_total_tokens, 0),
+      latest_token_event_tokens: latest_token_event_tokens(running_entry),
       current_turn_tokens: current_turn_tokens(running_entry)
     }
+  end
+
+  defp latest_token_event_tokens(running_entry) when is_map(running_entry) do
+    case Map.get(running_entry, :codex_last_delta_total_tokens) do
+      value when is_integer(value) and value > 0 -> value
+      _ -> current_turn_tokens(running_entry)
+    end
   end
 
   defp current_turn_tokens(running_entry) when is_map(running_entry) do

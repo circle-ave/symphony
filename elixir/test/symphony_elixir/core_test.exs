@@ -824,6 +824,86 @@ defmodule SymphonyElixir.CoreTest do
     refute Process.alive?(agent_pid)
   end
 
+  test "turn token budget uses latest token delta instead of cumulative session total" do
+    issue_id = "issue-token-turn-delta"
+    issue_identifier = "MT-570"
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_turn_tokens: 1_000, max_run_tokens: 5_000)
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        after
+          5_000 -> :ok
+        end
+      end)
+
+    ref = Process.monitor(agent_pid)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: ref,
+          identifier: issue_identifier,
+          issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+          session_id: "thread-turn-1",
+          started_at: DateTime.utc_now(),
+          last_codex_message: nil,
+          last_codex_timestamp: nil,
+          last_codex_event: nil,
+          codex_stream_window: [],
+          codex_input_tokens: 850,
+          codex_output_tokens: 50,
+          codex_total_tokens: 900,
+          codex_turn_base_total_tokens: 0,
+          codex_last_delta_total_tokens: 900,
+          codex_last_reported_input_tokens: 850,
+          codex_last_reported_output_tokens: 50,
+          codex_last_reported_total_tokens: 900,
+          turn_count: 1
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    {:noreply, updated_state} =
+      Orchestrator.handle_info(
+        {:codex_worker_update, issue_id,
+         %{
+           event: :notification,
+           payload: %{
+             "method" => "codex/event/token_count",
+             "params" => %{
+               "msg" => %{
+                 "type" => "token_count",
+                 "info" => %{
+                   "total_token_usage" => %{
+                     "input_tokens" => 1_500,
+                     "output_tokens" => 101,
+                     "total_tokens" => 1_601
+                   }
+                 }
+               }
+             }
+           },
+           timestamp: DateTime.utc_now()
+         }},
+        state
+      )
+
+    assert %{^issue_id => running_entry} = updated_state.running
+    assert running_entry.codex_total_tokens == 1_601
+    assert running_entry.codex_last_delta_total_tokens == 701
+    assert updated_state.blocked == %{}
+    assert updated_state.codex_totals.total_tokens == 701
+
+    send(agent_pid, :stop)
+  end
+
   test "comment reply turn token budget is capped below normal turn budget" do
     issue_id = "issue-comment-token-cap"
     issue_identifier = "MT-569"
