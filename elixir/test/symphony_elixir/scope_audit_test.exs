@@ -60,6 +60,51 @@ defmodule SymphonyElixir.ScopeAuditTest do
     end
   end
 
+  test "scope audit decodes current app-server agent message events" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-scope-audit-current-events-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-702")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "fake-codex.trace")
+
+      File.mkdir_p!(workspace)
+      write_fake_scope_codex!(codex_binary, "current-events", trace_file)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        scope_audit: %{
+          enabled: true,
+          command: "#{codex_binary} app-server",
+          max_tokens: 40_000,
+          timeout_ms: 5_000
+        }
+      )
+
+      issue = %Issue{
+        id: "issue-scope-current-events",
+        identifier: "MT-702",
+        title: "Generate assets",
+        description: "Generate missing logo and product imagery.",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-702",
+        labels: []
+      }
+
+      assert {:ok, %ScopeAudit.Result{} = result} = ScopeAudit.run(issue, workspace, self())
+      assert result.verdict == :blocked
+      assert result.summary == "Current event shape"
+      assert result.confusions == ["Which asset slots are targetable?"]
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "scope audit stops when its token budget is exceeded" do
     test_root =
       Path.join(
@@ -139,8 +184,15 @@ defmodule SymphonyElixir.ScopeAuditTest do
           else
             printf 'response:%s\\n' '{"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"total":{"totalTokens":12}}}}' >> "$trace_file"
             printf '%s\\n' '{"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"total":{"totalTokens":12}}}}'
-            printf 'response:%s\\n' '{"method":"item/completed","params":{"msg":{"type":"agent_message","message":"{\\"verdict\\":\\"blocked\\",\\"summary\\":\\"Ambiguous asset workflow\\",\\"intended_workflow\\":\\"Tenant asks an agent to replace assets.\\",\\"target_surfaces\\":\\"blocked\\",\\"acceptance_source\\":\\"ticket body and linked PR metadata\\",\\"evidence\\":[\\"No module asset inventory is defined.\\"],\\"confusions\\":[\\"Which module asset slots are targetable?\\"]}"}}}' >> "$trace_file"
-            printf '%s\\n' '{"method":"item/completed","params":{"msg":{"type":"agent_message","message":"{\\"verdict\\":\\"blocked\\",\\"summary\\":\\"Ambiguous asset workflow\\",\\"intended_workflow\\":\\"Tenant asks an agent to replace assets.\\",\\"target_surfaces\\":\\"blocked\\",\\"acceptance_source\\":\\"ticket body and linked PR metadata\\",\\"evidence\\":[\\"No module asset inventory is defined.\\"],\\"confusions\\":[\\"Which module asset slots are targetable?\\"]}"}}}'
+            if [ "#{mode}" = "current-events" ]; then
+              printf '%s\\n' '{"method":"item/completed","params":{"item":{"type":"userMessage","content":[{"type":"text","text":"ignore {\\"verdict\\":\\"clear\\"}"}]}}}'
+              printf '%s\\n' '{"method":"item/agentMessage/delta","params":{"delta":"{\\"verdict\\":\\"blocked\\","}}'
+              printf '%s\\n' '{"method":"item/agentMessage/delta","params":{"delta":"\\"summary\\":\\"Current event shape\\",\\"intended_workflow\\":\\"blocked\\",\\"target_surfaces\\":\\"blocked\\",\\"acceptance_source\\":\\"ticket\\",\\"evidence\\":[\\"Modern app-server events stream deltas.\\"],\\"confusions\\":[\\"Which asset slots are targetable?\\"]}"}}'
+              printf '%s\\n' '{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"{\\"verdict\\":\\"blocked\\",\\"summary\\":\\"Current event shape\\",\\"intended_workflow\\":\\"blocked\\",\\"target_surfaces\\":\\"blocked\\",\\"acceptance_source\\":\\"ticket\\",\\"evidence\\":[\\"Modern app-server events stream deltas.\\"],\\"confusions\\":[\\"Which asset slots are targetable?\\"]}"}}}'
+            else
+              printf 'response:%s\\n' '{"method":"item/completed","params":{"msg":{"type":"agent_message","message":"{\\"verdict\\":\\"blocked\\",\\"summary\\":\\"Ambiguous asset workflow\\",\\"intended_workflow\\":\\"Tenant asks an agent to replace assets.\\",\\"target_surfaces\\":\\"blocked\\",\\"acceptance_source\\":\\"ticket body and linked PR metadata\\",\\"evidence\\":[\\"No module asset inventory is defined.\\"],\\"confusions\\":[\\"Which module asset slots are targetable?\\"]}"}}}' >> "$trace_file"
+              printf '%s\\n' '{"method":"item/completed","params":{"msg":{"type":"agent_message","message":"{\\"verdict\\":\\"blocked\\",\\"summary\\":\\"Ambiguous asset workflow\\",\\"intended_workflow\\":\\"Tenant asks an agent to replace assets.\\",\\"target_surfaces\\":\\"blocked\\",\\"acceptance_source\\":\\"ticket body and linked PR metadata\\",\\"evidence\\":[\\"No module asset inventory is defined.\\"],\\"confusions\\":[\\"Which module asset slots are targetable?\\"]}"}}}'
+            fi
             printf 'response:%s\\n' '{"method":"turn/completed"}' >> "$trace_file"
             printf '%s\\n' '{"method":"turn/completed"}'
           fi

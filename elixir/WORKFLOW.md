@@ -46,18 +46,18 @@ agent:
   max_run_tokens: 180000
   scope_audit:
     enabled: true
-    command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5-mini"' --config model_reasoning_effort=medium app-server
+    command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
     max_tokens: 40000
     timeout_ms: 300000
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
   model_router:
     enabled: true
-    router_command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5-mini"' --config model_reasoning_effort=medium app-server
+    router_command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
     default_profile: standard
     profiles:
       fast:
-        command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5-mini"' --config model_reasoning_effort=medium app-server
+        command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
         description: Small docs, config, or mechanical edits with low ambiguity.
       standard:
         command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server

@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Codex.ModelRouter do
 
   require Logger
 
-  alias SymphonyElixir.Codex.AppServer
+  alias SymphonyElixir.Codex.{AppServer, MessageText}
   alias SymphonyElixir.{Config, Linear.Issue}
 
   @read_only_turn_sandbox %{
@@ -125,8 +125,7 @@ defmodule SymphonyElixir.Codex.ModelRouter do
   defp router_output(ref) do
     ref
     |> drain_router_messages([])
-    |> Enum.flat_map(&message_text_parts/1)
-    |> Enum.join("")
+    |> MessageText.output()
   end
 
   defp drain_router_messages(ref, acc) do
@@ -225,59 +224,6 @@ defmodule SymphonyElixir.Codex.ModelRouter do
       _ -> []
     end
   end
-
-  defp message_text_parts(%{payload: payload}), do: text_parts(payload)
-  defp message_text_parts(%{raw: raw}) when is_binary(raw), do: raw_text_parts(raw)
-  defp message_text_parts(%{"payload" => payload}), do: text_parts(payload)
-  defp message_text_parts(%{"raw" => raw}) when is_binary(raw), do: raw_text_parts(raw)
-  defp message_text_parts(message) when is_map(message), do: text_parts(message)
-  defp message_text_parts(_message), do: []
-
-  defp raw_text_parts(raw) do
-    case Jason.decode(raw) do
-      {:ok, decoded} -> text_parts(decoded)
-      _ -> []
-    end
-  end
-
-  defp text_parts(payload) when is_map(payload) do
-    text_paths()
-    |> Enum.flat_map(fn path -> content_text(map_path(payload, path)) end)
-  end
-
-  defp text_parts(_payload), do: []
-
-  defp text_paths do
-    [
-      ["params", "msg", "textDelta"],
-      ["params", "msg", "text"],
-      ["params", "msg", "message"],
-      ["params", "msg", "content"],
-      ["params", "msg", "payload", "textDelta"],
-      ["params", "msg", "payload", "text"],
-      ["params", "msg", "payload", "message"],
-      ["params", "msg", "payload", "content"],
-      ["params", "item", "content"],
-      ["params", "textDelta"],
-      ["params", "text"],
-      ["params", "message"],
-      ["params", "content"],
-      ["textDelta"],
-      ["text"],
-      ["message"],
-      ["content"]
-    ]
-  end
-
-  defp content_text(value) when is_binary(value), do: [value]
-  defp content_text(values) when is_list(values), do: Enum.flat_map(values, &content_text/1)
-
-  defp content_text(%{} = value) do
-    ["text", "message", "content", "summary"]
-    |> Enum.flat_map(fn key -> content_text(map_get(value, key)) end)
-  end
-
-  defp content_text(_value), do: []
 
   defp profiles(%{} = router_config) do
     router_config
@@ -454,16 +400,6 @@ defmodule SymphonyElixir.Codex.ModelRouter do
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
-
-  defp map_path(value, []), do: value
-
-  defp map_path(%{} = map, [key | rest]) do
-    map
-    |> map_get(key)
-    |> map_path(rest)
-  end
-
-  defp map_path(_value, _path), do: nil
 
   defp map_get(map, key) when is_map(map) do
     Map.get(map, key) || Map.get(map, String.to_atom(to_string(key)))

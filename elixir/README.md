@@ -210,7 +210,7 @@ codex:
     default_profile: standard
     profiles:
       fast:
-        command: "$CODEX_BIN --config 'model=\"gpt-5-mini\"' app-server"
+        command: "$CODEX_BIN --config 'model=\"gpt-5.4-mini\"' app-server"
         description: Small docs, config, or mechanical edits.
       standard:
         command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' --config model_reasoning_effort=high app-server"

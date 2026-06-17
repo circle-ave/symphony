@@ -2,7 +2,7 @@ defmodule SymphonyElixir.ModelRouterTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.AgentRunner
-  alias SymphonyElixir.Codex.ModelRouter
+  alias SymphonyElixir.Codex.{MessageText, ModelRouter}
   alias SymphonyElixir.Linear.Issue
 
   test "disabled model router preserves the configured codex command" do
@@ -101,6 +101,36 @@ defmodule SymphonyElixir.ModelRouterTest do
     assert route.command == "codex standard app-server"
     assert route.source == :fallback
     assert route.reason == "model router returned no usable profile"
+  end
+
+  test "model router decodes current app-server agent message events" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command: "codex base app-server",
+      codex_model_router: router_config()
+    )
+
+    test_pid = self()
+
+    turn_runner = fn _workspace, _prompt, _issue, _opts ->
+      send(test_pid, {:router_message, %{"method" => "item/completed", "params" => %{"item" => %{"type" => "userMessage", "content" => [%{"type" => "text", "text" => ~s({"profile":"fast"})}]}}}})
+      send(test_pid, {:router_message, %{"method" => "item/agentMessage/delta", "params" => %{"delta" => ~s|{"profile":|}}})
+      send(test_pid, {:router_message, %{"method" => "item/agentMessage/delta", "params" => %{"delta" => ~s|"deep","confidence":0.88,"reason":"current events"}|}}})
+
+      output =
+        receive_router_messages([])
+        |> MessageText.output()
+
+      {:ok, output}
+    end
+
+    assert {:ok, route} =
+             ModelRouter.route_for_test(issue_fixture(), "/tmp/router-workspace", turn_runner: turn_runner)
+
+    assert route.profile == "deep"
+    assert route.command == "codex deep app-server"
+    assert route.confidence == 0.88
+    assert route.reason == "current events"
+    assert route.source == :router
   end
 
   test "agent runner launches the selected model profile command" do
@@ -216,12 +246,23 @@ defmodule SymphonyElixir.ModelRouterTest do
         3)
           printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-router"}}}'
           if [ "$mode" = "router" ]; then
-            printf '%s\\n' '{"method":"item/completed","params":{"msg":{"type":"agent_message","message":"{\\"profile\\":\\"deep\\",\\"confidence\\":0.96,\\"reason\\":\\"needs senior review\\"}"}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"type":"userMessage","content":[{"type":"text","text":"ignore {\\"profile\\":\\"fast\\"}"}]}}}'
+            printf '%s\\n' '{"method":"item/agentMessage/delta","params":{"delta":"{\\"profile\\":\\"deep\\","}}'
+            printf '%s\\n' '{"method":"item/agentMessage/delta","params":{"delta":"\\"confidence\\":0.96,\\"reason\\":\\"needs senior review\\"}"}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"{\\"profile\\":\\"deep\\",\\"confidence\\":0.96,\\"reason\\":\\"needs senior review\\"}"}}}'
           fi
           printf '%s\\n' '{"method":"turn/completed"}'
           ;;
       esac
     done
     """
+  end
+
+  defp receive_router_messages(acc) do
+    receive do
+      {:router_message, message} -> receive_router_messages([message | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
   end
 end
