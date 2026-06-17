@@ -188,6 +188,7 @@ Scope Confidence Gate:
 - Restate the intended user-facing workflow, target users, target surfaces/modules, and acceptance criteria using only ticket text, active human comments, and directly linked artifacts.
 - Mark `Scope Confidence: clear` only when one implementation path is strongly supported and testable.
 - Mark `Scope Confidence: blocked` when the ticket supports materially different product interpretations, target surfaces/modules are unclear, acceptance cannot be verified, an existing workpad narrowed scope beyond the ticket, or implementation would choose between product definitions.
+- Missing or non-reviewable demo/review recipe details are agent-reworkable; use `Rework`, not `Waiting`, unless underlying product scope, target surfaces, or acceptance behavior is ambiguous.
 - If blocked, do not edit code, create branches, open PRs, or move toward review. Update the workpad `Confusions` with the minimal concrete questions, explain the impact, and move the issue to `Waiting`.
 - When resuming a ticket, challenge the current workpad against the original issue and human comments before trusting checked boxes or prior acceptance criteria.
 

@@ -71,6 +71,15 @@ defmodule SymphonyElixir.ScopeAudit do
   def park_blocked_issue(%Issue{}, %Result{}), do: {:error, :scope_audit_not_blocked}
   def park_blocked_issue(_issue, _result), do: {:error, :invalid_scope_audit_result}
 
+  @spec reworkable_review_recipe_blocker?(Result.t()) :: boolean()
+  def reworkable_review_recipe_blocker?(%Result{verdict: :blocked} = result) do
+    result
+    |> result_text()
+    |> review_recipe_repair_text?()
+  end
+
+  def reworkable_review_recipe_blocker?(%Result{}), do: false
+
   defp do_run(issue, workspace, codex_update_recipient, opts, audit, settings) do
     prompt = audit_prompt(issue, audit)
 
@@ -350,6 +359,7 @@ defmodule SymphonyElixir.ScopeAudit do
     - Use only the ticket body, latest active human comment, and directly linked artifacts.
     - If inspecting links is available, inspect only metadata or short summaries. Do not read full raw diffs, logs, build output, or broad repository files.
     - If the ticket supports materially different product definitions, target surfaces/modules are unclear, or acceptance cannot be verified, return `blocked`.
+    - Missing or non-reviewable demo/review recipe details are agent-reworkable; return `clear` unless underlying product scope, target surfaces, or acceptance behavior is ambiguous.
     - If blocked, ask the fewest concrete questions needed to unblock implementation.
     - Stay within #{audit.max_tokens} tokens.
 
@@ -391,6 +401,58 @@ defmodule SymphonyElixir.ScopeAudit do
   end
 
   defp latest_comment_text(_issue), do: "None."
+
+  defp result_text(%Result{} = result) do
+    [
+      result.summary,
+      result.intended_workflow,
+      result.target_surfaces,
+      result.acceptance_source
+    ]
+    |> Kernel.++(result.evidence || [])
+    |> Kernel.++(result.confusions || [])
+    |> Enum.filter(&is_binary/1)
+    |> Enum.join("\n")
+    |> String.downcase()
+  end
+
+  defp review_recipe_repair_text?(text) when is_binary(text) do
+    review_recipe_context? =
+      Enum.any?(
+        [
+          "review recipe",
+          "demo recipe",
+          "review demo",
+          "functional demo",
+          "reviewer-accessible",
+          "reviewer-reachable",
+          "open:"
+        ],
+        &String.contains?(text, &1)
+      )
+
+    repair_signal? =
+      Enum.any?(
+        [
+          "missing",
+          "no setup",
+          "no-setup",
+          "url",
+          "login",
+          "credential",
+          "localhost",
+          "source diff",
+          "pull request",
+          "points at pr",
+          "pr instead",
+          "cannot be derived",
+          "can be derived"
+        ],
+        &String.contains?(text, &1)
+      )
+
+    review_recipe_context? and repair_signal?
+  end
 
   defp linked_urls(nil), do: []
 

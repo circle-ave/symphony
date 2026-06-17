@@ -163,13 +163,22 @@ defmodule SymphonyElixir.AgentRunner do
         :clear
 
       {:ok, %ScopeAudit.Result{verdict: :blocked} = result} ->
-        with :ok <- ScopeAudit.park_blocked_issue(issue, result) do
-          Logger.info("Scope audit parked #{issue_context(issue)} in waiting state")
-          :parked
-        end
+        handle_blocked_scope_audit(issue, result)
 
       {:error, reason} ->
         {:error, {:scope_audit_failed, reason}}
+    end
+  end
+
+  defp handle_blocked_scope_audit(issue, result) do
+    if ScopeAudit.reworkable_review_recipe_blocker?(result) do
+      Logger.info("Scope audit allowed reworkable review-demo repair for #{issue_context(issue)}")
+      :clear
+    else
+      with :ok <- ScopeAudit.park_blocked_issue(issue, result) do
+        Logger.info("Scope audit parked #{issue_context(issue)} in waiting state")
+        :parked
+      end
     end
   end
 

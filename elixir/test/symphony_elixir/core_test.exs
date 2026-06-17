@@ -3461,6 +3461,98 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "review-demo scope audit blockers continue into rework agent" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-review-demo-rework-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(workspace_root)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{\"id\":1,\"result\":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-review-demo\"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-review-demo\"}}}'
+            printf '%s\\n' '{\"method\":\"turn/completed\"}'
+            exit 0
+            ;;
+          *)
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_waiting_state: "Waiting",
+        workspace_root: workspace_root,
+        hook_before_run: "touch before-run-ran",
+        codex_command: "#{codex_binary} app-server",
+        scope_audit: %{enabled: true}
+      )
+
+      issue = %Issue{
+        id: "issue-review-demo-rework",
+        identifier: "MT-561",
+        title: "Repair analytics review recipe",
+        description: "Review recipe points at a PR instead of a reviewer-ready app demo.",
+        state: "Rework",
+        url: "https://example.org/issues/MT-561",
+        labels: []
+      }
+
+      audit_runner = fn _issue, _workspace, _recipient, _opts ->
+        {:ok,
+         %SymphonyElixir.ScopeAudit.Result{
+           verdict: :blocked,
+           summary: "Review recipe points at a PR and lacks a no-setup app demo URL.",
+           intended_workflow: "Normal agent repairs the Demo / Review Recipe from repo evidence.",
+           target_surfaces: "Demo / Review Recipe",
+           acceptance_source: "active workpad",
+           evidence: ["Open target is a pull request, not the app."],
+           confusions: ["Missing exact no-setup Open: URL for the review demo."]
+         }}
+      end
+
+      assert :ok =
+               AgentRunner.run(issue, self(),
+                 max_turns: 1,
+                 scope_audit_runner: audit_runner,
+                 issue_state_fetcher: fn ["issue-review-demo-rework"] ->
+                   {:ok, [%{issue | state: "Done"}]}
+                 end
+               )
+
+      workspace = Path.join(workspace_root, "MT-561")
+      assert File.exists?(Path.join(workspace, "before-run-ran"))
+      refute_receive {:memory_tracker_state_update, "issue-review-demo-rework", "Waiting"}, 300
+      refute_receive {:memory_tracker_comment, "issue-review-demo-rework", _body}, 300
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner forwards timestamped codex updates to recipient" do
     test_root =
       Path.join(
