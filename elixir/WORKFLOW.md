@@ -46,24 +46,24 @@ agent:
   max_run_tokens: 140000
   scope_audit:
     enabled: true
-    command: codex --config shell_environment_policy.inherit=all --config tool_output_token_limit=4000 --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
+    command: codex --config shell_environment_policy.inherit=all --config 'notify=[]' --config tool_output_token_limit=4000 --config features.apps=false --config features.plugins=false --config features.browser_use=false --config features.chronicle=false --config features.computer_use=false --config features.image_generation=false --config features.memories=false --config features.multi_agent=false --config features.shell_snapshot=false --config features.tool_search=false --config features.tool_suggest=false --config features.workspace_dependencies=false --config skills.bundled.enabled=false --config project_doc_max_bytes=0 --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
     max_tokens: 40000
     timeout_ms: 300000
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config tool_output_token_limit=4000 --config 'model="gpt-5.5"' --config model_reasoning_effort=medium app-server
+  command: codex --config shell_environment_policy.inherit=all --config 'notify=[]' --config tool_output_token_limit=4000 --config features.apps=false --config features.plugins=false --config features.browser_use=false --config features.chronicle=false --config features.computer_use=false --config features.image_generation=false --config features.memories=false --config features.multi_agent=false --config features.shell_snapshot=false --config features.tool_search=false --config features.tool_suggest=false --config features.workspace_dependencies=false --config skills.bundled.enabled=false --config project_doc_max_bytes=0 --config 'model="gpt-5.5"' --config model_reasoning_effort=medium app-server
   model_router:
     enabled: true
-    router_command: codex --config shell_environment_policy.inherit=all --config tool_output_token_limit=4000 --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
+    router_command: codex --config shell_environment_policy.inherit=all --config 'notify=[]' --config tool_output_token_limit=4000 --config features.apps=false --config features.plugins=false --config features.browser_use=false --config features.chronicle=false --config features.computer_use=false --config features.image_generation=false --config features.memories=false --config features.multi_agent=false --config features.shell_snapshot=false --config features.tool_search=false --config features.tool_suggest=false --config features.workspace_dependencies=false --config skills.bundled.enabled=false --config project_doc_max_bytes=0 --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
     default_profile: standard
     profiles:
       fast:
-        command: codex --config shell_environment_policy.inherit=all --config tool_output_token_limit=4000 --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
+        command: codex --config shell_environment_policy.inherit=all --config 'notify=[]' --config tool_output_token_limit=4000 --config features.apps=false --config features.plugins=false --config features.browser_use=false --config features.chronicle=false --config features.computer_use=false --config features.image_generation=false --config features.memories=false --config features.multi_agent=false --config features.shell_snapshot=false --config features.tool_search=false --config features.tool_suggest=false --config features.workspace_dependencies=false --config skills.bundled.enabled=false --config project_doc_max_bytes=0 --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=medium app-server
         description: Small docs, config, or mechanical edits with low ambiguity.
       standard:
-        command: codex --config shell_environment_policy.inherit=all --config tool_output_token_limit=4000 --config 'model="gpt-5.5"' --config model_reasoning_effort=medium app-server
+        command: codex --config shell_environment_policy.inherit=all --config 'notify=[]' --config tool_output_token_limit=4000 --config features.apps=false --config features.plugins=false --config features.browser_use=false --config features.chronicle=false --config features.computer_use=false --config features.image_generation=false --config features.memories=false --config features.multi_agent=false --config features.shell_snapshot=false --config features.tool_search=false --config features.tool_suggest=false --config features.workspace_dependencies=false --config skills.bundled.enabled=false --config project_doc_max_bytes=0 --config 'model="gpt-5.5"' --config model_reasoning_effort=medium app-server
         description: Normal implementation work with moderate ambiguity.
       deep:
-        command: codex --config shell_environment_policy.inherit=all --config tool_output_token_limit=4000 --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
+        command: codex --config shell_environment_policy.inherit=all --config 'notify=[]' --config tool_output_token_limit=4000 --config features.apps=false --config features.plugins=false --config features.browser_use=false --config features.chronicle=false --config features.computer_use=false --config features.image_generation=false --config features.memories=false --config features.multi_agent=false --config features.shell_snapshot=false --config features.tool_search=false --config features.tool_suggest=false --config features.workspace_dependencies=false --config skills.bundled.enabled=false --config project_doc_max_bytes=0 --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
         description: Architecture, migrations, failed retries, rework, or risky user-facing changes.
   approval_policy: never
   read_timeout_ms: 30000
