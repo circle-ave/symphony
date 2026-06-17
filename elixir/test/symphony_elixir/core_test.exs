@@ -824,8 +824,8 @@ defmodule SymphonyElixir.CoreTest do
     refute Process.alive?(agent_pid)
   end
 
-  test "turn token budget uses latest token delta instead of cumulative session total" do
-    issue_id = "issue-token-turn-delta"
+  test "turn token budget uses last token usage instead of cumulative session total" do
+    issue_id = "issue-token-turn-last-usage"
     issue_identifier = "MT-570"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turn_tokens: 1_000, max_run_tokens: 5_000)
@@ -854,14 +854,15 @@ defmodule SymphonyElixir.CoreTest do
           last_codex_timestamp: nil,
           last_codex_event: nil,
           codex_stream_window: [],
-          codex_input_tokens: 850,
-          codex_output_tokens: 50,
-          codex_total_tokens: 900,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
           codex_turn_base_total_tokens: 0,
-          codex_last_delta_total_tokens: 900,
-          codex_last_reported_input_tokens: 850,
-          codex_last_reported_output_tokens: 50,
-          codex_last_reported_total_tokens: 900,
+          codex_last_delta_total_tokens: 0,
+          codex_last_usage_total_tokens: 0,
+          codex_last_reported_input_tokens: 0,
+          codex_last_reported_output_tokens: 0,
+          codex_last_reported_total_tokens: 0,
           turn_count: 1
         }
       },
@@ -885,6 +886,11 @@ defmodule SymphonyElixir.CoreTest do
                      "input_tokens" => 1_500,
                      "output_tokens" => 101,
                      "total_tokens" => 1_601
+                   },
+                   "last_token_usage" => %{
+                     "input_tokens" => 650,
+                     "output_tokens" => 51,
+                     "total_tokens" => 701
                    }
                  }
                }
@@ -897,9 +903,10 @@ defmodule SymphonyElixir.CoreTest do
 
     assert %{^issue_id => running_entry} = updated_state.running
     assert running_entry.codex_total_tokens == 1_601
-    assert running_entry.codex_last_delta_total_tokens == 701
+    assert running_entry.codex_last_delta_total_tokens == 1_601
+    assert running_entry.codex_last_usage_total_tokens == 701
     assert updated_state.blocked == %{}
-    assert updated_state.codex_totals.total_tokens == 701
+    assert updated_state.codex_totals.total_tokens == 1_601
 
     send(agent_pid, :stop)
   end

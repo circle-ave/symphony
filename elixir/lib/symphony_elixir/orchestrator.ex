@@ -2120,6 +2120,7 @@ defmodule SymphonyElixir.Orchestrator do
             codex_total_tokens: 0,
             codex_turn_base_total_tokens: 0,
             codex_last_delta_total_tokens: 0,
+            codex_last_usage_total_tokens: 0,
             codex_last_reported_input_tokens: 0,
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
@@ -3772,6 +3773,7 @@ defmodule SymphonyElixir.Orchestrator do
         codex_total_tokens: codex_total_tokens + token_delta.total_tokens,
         codex_turn_base_total_tokens: if(new_turn?, do: codex_total_tokens, else: codex_turn_base_total_tokens),
         codex_last_delta_total_tokens: token_delta.total_tokens,
+        codex_last_usage_total_tokens: token_delta.last_usage_total_tokens,
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
@@ -3861,9 +3863,15 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp latest_token_event_tokens(running_entry) when is_map(running_entry) do
-    case Map.get(running_entry, :codex_last_delta_total_tokens) do
-      value when is_integer(value) and value > 0 -> value
-      _ -> current_turn_tokens(running_entry)
+    cond do
+      positive_integer?(Map.get(running_entry, :codex_last_usage_total_tokens)) ->
+        Map.fetch!(running_entry, :codex_last_usage_total_tokens)
+
+      positive_integer?(Map.get(running_entry, :codex_last_delta_total_tokens)) ->
+        Map.fetch!(running_entry, :codex_last_delta_total_tokens)
+
+      true ->
+        current_turn_tokens(running_entry)
     end
   end
 
@@ -4053,6 +4061,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp extract_token_delta(running_entry, %{event: _, timestamp: _} = update) do
     running_entry = running_entry || %{}
     usage = extract_token_usage(update)
+    last_usage_total_tokens = get_token_usage(extract_last_token_usage(update), :total)
 
     {
       compute_token_delta(
@@ -4082,7 +4091,8 @@ defmodule SymphonyElixir.Orchestrator do
         total_tokens: total.delta,
         input_reported: input.reported,
         output_reported: output.reported,
-        total_reported: total.reported
+        total_reported: total.reported,
+        last_usage_total_tokens: last_usage_total_tokens || total.delta
       }
     end)
   end
@@ -4119,6 +4129,19 @@ defmodule SymphonyElixir.Orchestrator do
       %{}
   end
 
+  defp extract_last_token_usage(update) do
+    payloads = [
+      update[:usage],
+      Map.get(update, "usage"),
+      Map.get(update, :usage),
+      update[:payload],
+      Map.get(update, "payload"),
+      update
+    ]
+
+    Enum.find_value(payloads, &last_token_usage_from_payload/1) || %{}
+  end
+
   defp extract_rate_limits(update) do
     rate_limits_from_payload(update[:rate_limits]) ||
       rate_limits_from_payload(Map.get(update, "rate_limits")) ||
@@ -4144,6 +4167,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp absolute_token_usage_from_payload(_payload), do: nil
+
+  defp last_token_usage_from_payload(payload) when is_map(payload) do
+    last_usage_paths = [
+      ["params", "msg", "payload", "info", "last_token_usage"],
+      [:params, :msg, :payload, :info, :last_token_usage],
+      ["params", "msg", "info", "last_token_usage"],
+      [:params, :msg, :info, :last_token_usage],
+      ["payload", "info", "last_token_usage"],
+      [:payload, :info, :last_token_usage],
+      ["info", "last_token_usage"],
+      [:info, :last_token_usage]
+    ]
+
+    explicit_map_at_paths(payload, last_usage_paths)
+  end
+
+  defp last_token_usage_from_payload(_payload), do: nil
 
   defp turn_completed_usage_from_payload(payload) when is_map(payload) do
     method = Map.get(payload, "method") || Map.get(payload, :method)
