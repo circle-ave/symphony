@@ -2386,6 +2386,45 @@ defmodule SymphonyElixir.CoreTest do
     refute MapSet.member?(updated_state.claimed, issue_id)
   end
 
+  test "retry capacity errors identify reserved comment reply slots" do
+    issue_id = "issue-retry-reserved"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_active_states: ["Rework"],
+      max_concurrent_agents: 2
+    )
+
+    previous_client = Application.get_env(:symphony_elixir, :linear_client_module)
+    Application.put_env(:symphony_elixir, :linear_client_module, RetryLinearClient)
+
+    on_exit(fn ->
+      if is_nil(previous_client) do
+        Application.delete_env(:symphony_elixir, :linear_client_module)
+      else
+        Application.put_env(:symphony_elixir, :linear_client_module, previous_client)
+      end
+    end)
+
+    state = %Orchestrator.State{
+      running: %{"issue-running" => %{}},
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      max_concurrent_agents: 2,
+      comment_reply_reserve_active: true
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_retry_issue_for_test(state, issue_id, 1, %{identifier: "MT-702"})
+
+    refute_receive {:retry_fetch_issue_states_by_ids, _ids}
+
+    assert %{attempt: 2, error: "no dispatchable agent slots; reserved for comment replies"} =
+             retry = updated_state.retry_attempts[issue_id]
+
+    Process.cancel_timer(retry.timer_ref)
+  end
+
   test "resource-gated retries stay local while marker is still busy" do
     issue_id = "issue-local-gate-retry"
 

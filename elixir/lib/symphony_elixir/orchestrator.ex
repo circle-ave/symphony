@@ -2262,7 +2262,7 @@ defmodule SymphonyElixir.Orchestrator do
 
         metadata =
           metadata
-          |> Map.merge(%{error: "no available orchestrator slots"})
+          |> Map.merge(%{error: retry_capacity_error(state, metadata)})
           |> maybe_use_resource_gate_slot_retry_delay()
 
         {:noreply, schedule_issue_retry(state, issue_id, attempt + 1, metadata)}
@@ -2294,6 +2294,38 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retry_capacity_may_be_available?(%State{} = state, metadata) when is_map(metadata) do
     normal_issue_slots_available?(state) and worker_slots_available?(state, metadata[:worker_host])
+  end
+
+  defp retry_capacity_error(%State{} = state, metadata) when is_map(metadata) do
+    cond do
+      !normal_issue_slots_available?(state) and reserved_comment_reply_slots(state) > 0 ->
+        "no dispatchable agent slots; reserved for comment replies"
+
+      !normal_issue_slots_available?(state) ->
+        "no available agent slots"
+
+      !worker_slots_available?(state, metadata[:worker_host]) ->
+        "no available worker slots"
+
+      true ->
+        "no available orchestrator slots"
+    end
+  end
+
+  defp retry_capacity_error(%State{} = state, %Issue{} = issue, metadata) when is_map(metadata) do
+    cond do
+      !normal_issue_slots_available?(state) ->
+        retry_capacity_error(state, metadata)
+
+      !state_slots_available?(issue, state.running) ->
+        "no available #{issue.state} agent slots"
+
+      !worker_slots_available?(state, metadata[:worker_host]) ->
+        "no available worker slots"
+
+      true ->
+        "no available orchestrator slots"
+    end
   end
 
   defp handle_retry_issue_lookup(%Issue{} = issue, state, issue_id, attempt, metadata, issues) do
@@ -2425,7 +2457,7 @@ defmodule SymphonyElixir.Orchestrator do
           metadata
           |> Map.merge(%{
             identifier: issue.identifier,
-            error: "no available orchestrator slots"
+            error: retry_capacity_error(state, issue, metadata)
           })
           |> maybe_use_resource_gate_slot_retry_delay()
 
