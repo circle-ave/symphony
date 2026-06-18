@@ -24,7 +24,6 @@ defmodule SymphonyElixir.ScopeAuditTest do
         scope_audit: %{
           enabled: true,
           command: "#{codex_binary} app-server",
-          max_tokens: 40_000,
           timeout_ms: 5_000
         }
       )
@@ -81,7 +80,6 @@ defmodule SymphonyElixir.ScopeAuditTest do
         scope_audit: %{
           enabled: true,
           command: "#{codex_binary} app-server",
-          max_tokens: 40_000,
           timeout_ms: 5_000
         }
       )
@@ -100,51 +98,6 @@ defmodule SymphonyElixir.ScopeAuditTest do
       assert result.verdict == :blocked
       assert result.summary == "Current event shape"
       assert result.confusions == ["Which asset slots are targetable?"]
-    after
-      File.rm_rf(test_root)
-    end
-  end
-
-  test "scope audit stops when its token budget is exceeded" do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-scope-audit-budget-#{System.unique_integer([:positive])}"
-      )
-
-    try do
-      workspace_root = Path.join(test_root, "workspaces")
-      workspace = Path.join(workspace_root, "MT-701")
-      codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "fake-codex.trace")
-
-      File.mkdir_p!(workspace)
-      write_fake_scope_codex!(codex_binary, "over-budget", trace_file)
-
-      write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: workspace_root,
-        scope_audit: %{
-          enabled: true,
-          command: "#{codex_binary} app-server",
-          max_tokens: 50,
-          timeout_ms: 5_000
-        }
-      )
-
-      issue = %Issue{
-        id: "issue-scope-budget",
-        identifier: "MT-701",
-        title: "Generate assets",
-        description: "Generate missing logo and product imagery.",
-        state: "In Progress",
-        url: "https://example.org/issues/MT-701",
-        labels: []
-      }
-
-      audit_result = ScopeAudit.run(issue, workspace, self())
-
-      assert audit_result == {:error, {:scope_audit_token_budget_exceeded, 125, 50}},
-             "audit result: #{inspect(audit_result)}\ntrace:\n#{File.read!(trace_file)}"
     after
       File.rm_rf(test_root)
     end

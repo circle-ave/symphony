@@ -10,15 +10,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   @jira_issue_attachments_tool "jira_issue_attachments"
   @linear_comment_reply_tool "linear_comment_reply"
   @comment_reply_marker "<!-- symphony-comment-reply -->"
-  @linear_graphql_string_value_limit 1_500
   @linear_graphql_description """
-  Execute a targeted Linear GraphQL query or mutation using Symphony's configured auth. Prefer injected issue/workpad fields first; keep reads issue-scoped and paginated. Broad issue/comment/review reads are rejected, and large string fields are truncated. Use linear_comment_reply for agent replies so the configured comment identity is applied.
+  Execute a Linear GraphQL query or mutation using Symphony's configured auth. Prefer injected issue/workpad fields first. Use linear_comment_reply for agent replies so the configured comment identity is applied.
   """
-  @linear_read_connection_limits [
-    {"comments", 10},
-    {"issues", 20},
-    {"reviews", 10}
-  ]
   @linear_comment_reply_description """
   Atomically save a revised active Codex Workpad and post the reply for the latest Linear comment.
   """
@@ -206,12 +200,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
 
     with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
-         :ok <- validate_linear_graphql_read_shape(query, variables),
          :ok <- authorize_linear_graphql(query, variables, opts, linear_client),
          {:ok, response} <- linear_client.(query, variables, []) do
-      response
-      |> truncate_linear_graphql_response()
-      |> graphql_response()
+      graphql_response(response)
     else
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
@@ -1228,79 +1219,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  defp validate_linear_graphql_read_shape(query, variables) do
-    if graphql_mutation?(query) do
-      :ok
-    else
-      validate_linear_connection_limits(query, variables)
-    end
-  end
-
-  defp validate_linear_connection_limits(query, variables) do
-    Enum.reduce_while(@linear_read_connection_limits, :ok, fn {connection, max}, :ok ->
-      case validate_linear_connection_limit(query, variables, connection, max) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  defp validate_linear_connection_limit(query, variables, connection, max) do
-    ~r/\b#{Regex.escape(connection)}\s*(?:\(([^)]*)\))?\s*\{/m
-    |> Regex.scan(query)
-    |> Enum.reduce_while(:ok, fn match, :ok ->
-      args = Enum.at(match, 1, "")
-
-      case linear_connection_page_size(args, variables) do
-        {:ok, value} when value <= max ->
-          {:cont, :ok}
-
-        {:ok, value} ->
-          {:halt, broad_linear_read_error(connection, max, value)}
-
-        :error ->
-          {:halt, broad_linear_read_error(connection, max, nil)}
-      end
-    end)
-  end
-
-  defp linear_connection_page_size(args, variables) do
-    case Regex.run(~r/\b(?:first|last)\s*:\s*(\$\w+|\d+)/, args) do
-      [_match, "$" <> variable_name] -> linear_page_size_variable(variables, variable_name)
-      [_match, value] -> parse_positive_integer(value)
-      _ -> :error
-    end
-  end
-
-  defp linear_page_size_variable(variables, variable_name) do
-    variables
-    |> Enum.find_value(fn {key, value} ->
-      if to_string(key) == variable_name, do: value
-    end)
-    |> parse_positive_integer()
-  end
-
-  defp parse_positive_integer(value) when is_integer(value) and value > 0, do: {:ok, value}
-
-  defp parse_positive_integer(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {integer, ""} when integer > 0 -> {:ok, integer}
-      _ -> :error
-    end
-  end
-
-  defp parse_positive_integer(_value), do: :error
-
-  defp broad_linear_read_error(connection, max, requested) do
-    {:error,
-     {:linear_query_blocked, "Blocked broad Linear read: `#{connection}` must include `first` or `last` at #{max} or less.",
-      %{
-        "connection" => connection,
-        "maxPageSize" => max,
-        "requestedPageSize" => requested
-      }}}
-  end
-
   defp graphql_response(response) do
     success =
       case response do
@@ -1311,29 +1229,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
     dynamic_tool_response(success, encode_payload(response))
   end
-
-  defp truncate_linear_graphql_response(value) when is_map(value) do
-    value
-    |> Enum.map(fn {key, child} -> {key, truncate_linear_graphql_response(child)} end)
-    |> Map.new()
-  end
-
-  defp truncate_linear_graphql_response(value) when is_list(value) do
-    Enum.map(value, &truncate_linear_graphql_response/1)
-  end
-
-  defp truncate_linear_graphql_response(value) when is_binary(value) do
-    if String.length(value) > @linear_graphql_string_value_limit do
-      omitted = String.length(value) - @linear_graphql_string_value_limit
-
-      String.slice(value, 0, @linear_graphql_string_value_limit) <>
-        "\n\n[truncated #{omitted} chars by Symphony linear_graphql output cap]"
-    else
-      value
-    end
-  end
-
-  defp truncate_linear_graphql_response(value), do: value
 
   defp failure_response(payload) do
     dynamic_tool_response(false, encode_payload(payload))
@@ -1409,15 +1304,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp tool_error_payload({:linear_scope_blocked, message, details}) do
-    %{
-      "error" => %{
-        "message" => message,
-        "details" => details
-      }
-    }
-  end
-
-  defp tool_error_payload({:linear_query_blocked, message, details}) do
     %{
       "error" => %{
         "message" => message,

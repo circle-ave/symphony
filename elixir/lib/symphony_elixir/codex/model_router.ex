@@ -351,8 +351,7 @@ defmodule SymphonyElixir.Codex.ModelRouter do
         "--config features.tool_suggest=false",
         "--config features.unified_exec=false",
         "--config features.workspace_dependencies=false",
-        "--config skills.bundled.enabled=false",
-        "--config project_doc_max_bytes=0"
+        "--config skills.bundled.enabled=false"
       ]
       |> Enum.join(" ")
 

@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.ScopeAudit do
   @moduledoc """
-  Runs a bounded clarification preflight before implementation starts.
+  Runs a clarification preflight before implementation starts.
   """
 
   require Logger
@@ -96,7 +96,6 @@ defmodule SymphonyElixir.ScopeAudit do
       payload: %{
         prompt_bytes: byte_size(prompt),
         prompt_words: word_count(prompt),
-        max_tokens: audit.max_tokens,
         timeout_ms: audit.timeout_ms
       }
     })
@@ -109,10 +108,10 @@ defmodule SymphonyElixir.ScopeAudit do
       turn_sandbox_policy: @read_only_turn_sandbox
     ]
 
-    run_bounded_session(workspace, session_opts, prompt, issue, codex_update_recipient, audit)
+    run_audit_session(workspace, session_opts, prompt, issue, codex_update_recipient, audit)
   end
 
-  defp run_bounded_session(workspace, session_opts, prompt, issue, codex_update_recipient, audit) do
+  defp run_audit_session(workspace, session_opts, prompt, issue, codex_update_recipient, audit) do
     parent = self()
     message_ref = make_ref()
 
@@ -135,7 +134,7 @@ defmodule SymphonyElixir.ScopeAudit do
         end
       end)
 
-    await_audit_result(task, task_monitor_ref(task), message_ref, [], 0, audit.max_tokens, audit.timeout_ms)
+    await_audit_result(task, task_monitor_ref(task), message_ref, [], audit.timeout_ms)
   end
 
   defp async_audit_task(fun) when is_function(fun, 0) do
@@ -145,25 +144,10 @@ defmodule SymphonyElixir.ScopeAudit do
     end
   end
 
-  defp await_audit_result(task, task_ref, message_ref, messages, observed_tokens, max_tokens, timeout_ms) do
+  defp await_audit_result(task, task_ref, message_ref, messages, timeout_ms) do
     receive do
       {^message_ref, message} ->
-        next_observed_tokens = max(observed_tokens, total_tokens(message) || 0)
-
-        if next_observed_tokens > max_tokens do
-          stop_audit_task(task)
-          {:error, {:scope_audit_token_budget_exceeded, next_observed_tokens, max_tokens}}
-        else
-          await_audit_result(
-            task,
-            task_ref,
-            message_ref,
-            [message | messages],
-            next_observed_tokens,
-            max_tokens,
-            timeout_ms
-          )
-        end
+        await_audit_result(task, task_ref, message_ref, [message | messages], timeout_ms)
 
       {^task_ref, {:ok, _turn_session}} ->
         finish_audit_task(task)
@@ -275,7 +259,7 @@ defmodule SymphonyElixir.ScopeAudit do
     ## Codex Workpad
 
     ### Plan
-    - [x] 1. Run bounded scope audit before implementation.
+    - [x] 1. Run scope audit before implementation.
     - [x] 2. Park in Waiting because implementation scope is not clear enough to start.
 
     ### Scope Confidence
@@ -322,7 +306,7 @@ defmodule SymphonyElixir.ScopeAudit do
   defp reject_dynamic_tool(tool, _arguments) do
     %{
       "success" => false,
-      "output" => "Scope audit is read-only and bounded; dynamic tool #{inspect(tool)} is unavailable."
+      "output" => "Scope audit is read-only; dynamic tool #{inspect(tool)} is unavailable."
     }
   end
 
@@ -351,7 +335,7 @@ defmodule SymphonyElixir.ScopeAudit do
 
   defp router_command(_router_config), do: nil
 
-  defp audit_prompt(%Issue{} = issue, audit) do
+  defp audit_prompt(%Issue{} = issue, _audit) do
     links =
       [issue.description, issue.latest_comment_body]
       |> Enum.flat_map(&linked_urls/1)
@@ -359,7 +343,7 @@ defmodule SymphonyElixir.ScopeAudit do
       |> Enum.take(8)
 
     """
-    You are Symphony's bounded scope-audit preflight.
+    You are Symphony's scope-audit preflight.
 
     Decide whether implementation is clear enough to start. This is not the implementation turn.
 
@@ -371,8 +355,6 @@ defmodule SymphonyElixir.ScopeAudit do
     - If the ticket supports materially different product definitions, target surfaces/modules are unclear, or acceptance cannot be verified, return `blocked`.
     - Missing or non-reviewable demo/review recipe details are agent-reworkable; return `clear` unless underlying product scope, target surfaces, or acceptance behavior is ambiguous.
     - If blocked, ask the fewest concrete questions needed to unblock implementation.
-    - Stay within #{audit.max_tokens} tokens.
-
     Return exactly one JSON object:
     {
       "verdict": "clear | blocked",
@@ -499,32 +481,6 @@ defmodule SymphonyElixir.ScopeAudit do
 
   defp emit_audit_update(_recipient, _issue, _message), do: :ok
 
-  defp total_tokens(message) do
-    [
-      map_get(message, "usage"),
-      map_get(message, :usage),
-      map_get(message, "payload"),
-      map_get(message, :payload),
-      message
-    ]
-    |> Enum.find_value(&token_usage_total/1)
-  end
-
-  defp token_usage_total(payload) when is_map(payload) do
-    usage =
-      map_path(payload, ["params", "msg", "payload", "info", "total_token_usage"]) ||
-        map_path(payload, ["params", "msg", "info", "total_token_usage"]) ||
-        map_path(payload, ["params", "tokenUsage", "total"]) ||
-        map_path(payload, ["tokenUsage", "total"]) ||
-        payload
-
-    integer_value(usage, "total_tokens") ||
-      integer_value(usage, "total") ||
-      integer_value(usage, "totalTokens")
-  end
-
-  defp token_usage_total(_payload), do: nil
-
   defp string_value(map, key) when is_map(map) do
     case map_get(map, key) do
       value when is_binary(value) -> String.trim(value)
@@ -559,40 +515,9 @@ defmodule SymphonyElixir.ScopeAudit do
     |> length()
   end
 
-  defp integer_value(map, key) when is_map(map) do
-    map
-    |> map_get(key)
-    |> integer_like()
-  end
-
-  defp integer_value(_map, _key), do: nil
-
-  defp integer_like(value) when is_integer(value), do: value
-
-  defp integer_like(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {integer, ""} -> integer
-      _ -> nil
-    end
-  end
-
-  defp integer_like(_value), do: nil
-
-  defp map_path(value, []), do: value
-
-  defp map_path(%{} = map, [key | rest]) do
-    map
-    |> map_get(key)
-    |> map_path(rest)
-  end
-
-  defp map_path(_value, _path), do: nil
-
   defp map_get(map, key) when is_map(map) do
     Map.get(map, key) || Map.get(map, String.to_atom(to_string(key)))
   rescue
     ArgumentError -> Map.get(map, key)
   end
-
-  defp map_get(_map, _key), do: nil
 end

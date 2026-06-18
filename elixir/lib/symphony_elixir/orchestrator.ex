@@ -31,7 +31,6 @@ defmodule SymphonyElixir.Orchestrator do
     Path.join([".symphony", "waiting-blocked"])
   ]
   @comment_reply_reserved_slots 1
-  @comment_reply_max_turn_tokens 60_000
   @comment_reply_marker "<!-- symphony-comment-reply -->"
   @comment_reply_monitor_role_name "linear_comment_monitor"
   @waiting_blocker_role_name "waiting_blocker_audit"
@@ -252,7 +251,6 @@ defmodule SymphonyElixir.Orchestrator do
           |> apply_codex_token_delta(token_delta)
           |> apply_codex_rate_limits(update)
           |> put_running_entry(issue_id, updated_running_entry)
-          |> enforce_token_budgets(issue_id)
 
         notify_dashboard()
         {:noreply, state}
@@ -3787,71 +3785,6 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp put_running_entry(%State{running: running} = state, issue_id, running_entry) do
     %{state | running: Map.put(running, issue_id, running_entry)}
-  end
-
-  defp enforce_token_budgets(%State{} = state, issue_id) when is_binary(issue_id) do
-    case Map.get(state.running, issue_id) do
-      nil ->
-        state
-
-      running_entry ->
-        case token_budget_exceeded(running_entry, Config.settings!().agent) do
-          nil ->
-            state
-
-          %{kind: kind, total_tokens: total_tokens, limit: limit} ->
-            stop_token_budget_exceeded_issue(state, issue_id, running_entry, kind, total_tokens, limit)
-        end
-    end
-  end
-
-  defp enforce_token_budgets(state, _issue_id), do: state
-
-  defp stop_token_budget_exceeded_issue(state, issue_id, running_entry, kind, total_tokens, limit) do
-    identifier = Map.get(running_entry, :identifier, issue_id)
-    session_id = running_entry_session_id(running_entry)
-    kind_label = if(kind == :turn, do: "turn", else: "run")
-    error = "#{kind_label} token budget exceeded: total_tokens=#{total_tokens} limit=#{limit}"
-
-    Logger.warning("Stopping agent for #{kind_label} token guard issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} total_tokens=#{total_tokens} limit=#{limit}")
-
-    state
-    |> record_session_completion_totals(running_entry)
-    |> stop_and_block_issue(issue_id, running_entry, error)
-  end
-
-  defp token_budget_exceeded(running_entry, agent_config) when is_map(running_entry) do
-    run_tokens = Map.get(running_entry, :codex_total_tokens, 0)
-    turn_tokens = latest_token_event_tokens(running_entry)
-
-    max_turn_tokens = effective_max_turn_tokens(running_entry, agent_config)
-
-    cond do
-      positive_integer?(max_turn_tokens) and turn_tokens > max_turn_tokens ->
-        %{kind: :turn, total_tokens: turn_tokens, limit: max_turn_tokens}
-
-      positive_integer?(agent_config.max_run_tokens) and run_tokens > agent_config.max_run_tokens ->
-        %{kind: :run, total_tokens: run_tokens, limit: agent_config.max_run_tokens}
-
-      true ->
-        nil
-    end
-  end
-
-  defp token_budget_exceeded(_running_entry, _agent_config), do: nil
-
-  defp effective_max_turn_tokens(%{comment_reply: true}, agent_config) do
-    configured = Map.get(agent_config, :max_turn_tokens)
-
-    if positive_integer?(configured) do
-      min(configured, @comment_reply_max_turn_tokens)
-    else
-      @comment_reply_max_turn_tokens
-    end
-  end
-
-  defp effective_max_turn_tokens(_running_entry, agent_config) do
-    Map.get(agent_config, :max_turn_tokens)
   end
 
   defp token_snapshot(running_entry) when is_map(running_entry) do

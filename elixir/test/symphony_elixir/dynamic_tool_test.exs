@@ -176,40 +176,6 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["contentItems"] == [%{"type" => "inputText", "text" => response["output"]}]
   end
 
-  test "linear_graphql truncates large string fields in successful responses" do
-    long_body = String.duplicate("a", 1_650)
-
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{"query" => "query Issue { issue(id: \"CIR-135\") { comments(first: 1) { nodes { body } } } }"},
-        linear_client: fn _query, _variables, _opts ->
-          {:ok,
-           %{
-             "data" => %{
-               "issue" => %{
-                 "comments" => %{
-                   "nodes" => [
-                     %{
-                       "body" => long_body,
-                       "id" => "comment-1"
-                     }
-                   ]
-                 }
-               }
-             }
-           }}
-        end
-      )
-
-    assert response["success"] == true
-    decoded = Jason.decode!(response["output"])
-    body = get_in(decoded, ["data", "issue", "comments", "nodes", Access.at(0), "body"])
-
-    assert String.length(body) < String.length(long_body)
-    assert body =~ "[truncated 150 chars by Symphony linear_graphql output cap]"
-  end
-
   test "linear_graphql accepts a raw GraphQL query string" do
     test_pid = self()
 
@@ -365,66 +331,6 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       )
 
     assert response["success"] == false
-  end
-
-  test "linear_graphql rejects broad read queries before calling Linear" do
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{
-          "query" => """
-          query ProjectComments($commentFirst: Int!) {
-            issues(first: 50) {
-              nodes {
-                identifier
-                comments(first: $commentFirst) { nodes { body } }
-              }
-            }
-          }
-          """,
-          "variables" => %{"commentFirst" => 25}
-        },
-        linear_client: fn _query, _variables, _opts ->
-          flunk("linear client should not be called for broad read queries")
-        end
-      )
-
-    assert response["success"] == false
-
-    assert Jason.decode!(response["output"]) == %{
-             "error" => %{
-               "message" => "Blocked broad Linear read: `comments` must include `first` or `last` at 10 or less.",
-               "details" => %{
-                 "connection" => "comments",
-                 "maxPageSize" => 10,
-                 "requestedPageSize" => 25
-               }
-             }
-           }
-  end
-
-  test "linear_graphql rejects unpaginated broad read queries" do
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        "query ProjectIssues { issues { nodes { identifier } } }",
-        linear_client: fn _query, _variables, _opts ->
-          flunk("linear client should not be called for unpaginated broad read queries")
-        end
-      )
-
-    assert response["success"] == false
-
-    assert Jason.decode!(response["output"]) == %{
-             "error" => %{
-               "message" => "Blocked broad Linear read: `issues` must include `first` or `last` at 20 or less.",
-               "details" => %{
-                 "connection" => "issues",
-                 "maxPageSize" => 20,
-                 "requestedPageSize" => nil
-               }
-             }
-           }
   end
 
   test "linear_graphql blocks issue mutations outside the selected project" do
