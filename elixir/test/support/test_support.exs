@@ -132,6 +132,7 @@ defmodule SymphonyElixir.TestSupport do
           local_bench_gate_retry_cooldown_ms: 60_000,
           max_concurrent_agents_by_state: %{},
           agent_roles: %{},
+          agent_ponytail: "off",
           scope_audit: %{enabled: false},
           codex_command: "codex app-server",
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
@@ -187,6 +188,7 @@ defmodule SymphonyElixir.TestSupport do
     local_bench_gate_retry_cooldown_ms = Keyword.get(config, :local_bench_gate_retry_cooldown_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     agent_roles = Keyword.get(config, :agent_roles)
+    agent_ponytail = Keyword.get(config, :agent_ponytail)
     scope_audit = Keyword.get(config, :scope_audit)
     codex_command = Keyword.get(config, :codex_command)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
@@ -245,6 +247,7 @@ defmodule SymphonyElixir.TestSupport do
         "  local_bench_gate_retry_cooldown_ms: #{yaml_value(local_bench_gate_retry_cooldown_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "  roles: #{yaml_value(agent_roles)}",
+        "  ponytail: #{yaml_value(agent_ponytail)}",
         "  scope_audit: #{yaml_value(scope_audit)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",

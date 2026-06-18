@@ -622,6 +622,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
                  "stream_window" => state_payload["running"] |> List.first() |> Map.fetch!("stream_window"),
+                 "prompt_policy" => nil,
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
              ],
@@ -737,6 +738,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_message" => "rendered",
                "last_event_at" => nil,
                "stream_window" => issue_payload["running"]["stream_window"],
+               "prompt_policy" => nil,
                "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
              },
              "retry" => nil,

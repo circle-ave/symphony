@@ -38,7 +38,19 @@ defmodule SymphonyElixir.PromptBuilder do
       @render_opts
     )
     |> IO.iodata_to_binary()
+    |> append_ponytail_policy()
     |> maybe_append_resume_checkpoint(Keyword.get(opts, :resume_checkpoint))
+  end
+
+  @spec append_ponytail_policy(String.t()) :: String.t()
+  def append_ponytail_policy(prompt) when is_binary(prompt) do
+    policy = Config.ponytail_policy()
+
+    if policy["enabled"] do
+      prompt <> "\n\n" <> ponytail_prompt(policy["mode"])
+    else
+      prompt
+    end
   end
 
   @spec phase_for_issue(map()) :: String.t()
@@ -114,6 +126,24 @@ defmodule SymphonyElixir.PromptBuilder do
   end
 
   defp maybe_append_resume_checkpoint(prompt, _checkpoint), do: prompt
+
+  defp ponytail_prompt(mode) do
+    """
+    ## Ponytail Mode
+
+    Level: #{mode || "full"}.
+
+    Use the laziest solution that actually works:
+    - First ask whether the requested code needs to exist at all.
+    - Prefer deletion, standard library, native platform features, and existing dependencies before new code.
+    - Avoid speculative abstractions, one-implementation interfaces, factories, and scaffolding for later.
+    - Keep the diff to the fewest files and simplest control flow that satisfies the ticket.
+    - Do not simplify away trust-boundary validation, data-loss prevention, security, or accessibility basics.
+    - Non-trivial logic needs one small runnable check.
+    - Final replies should be terse: completed actions and blockers only.
+    """
+    |> String.trim()
+  end
 
   defp resume_checkpoint_prompt(checkpoint) do
     issue = checkpoint_get(checkpoint, "issue") || %{}

@@ -326,7 +326,9 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp build_turn_prompt(issue, opts, 1, _max_turns, phase) do
     if Keyword.get(opts, :comment_reply, false) do
-      comment_reply_prompt(issue, Keyword.get(opts, :comment_reply_marker, @comment_reply_marker))
+      issue
+      |> comment_reply_prompt(Keyword.get(opts, :comment_reply_marker, @comment_reply_marker))
+      |> PromptBuilder.append_ponytail_policy()
     else
       PromptBuilder.build_prompt(issue, Keyword.put(opts, :phase, phase))
     end
@@ -354,7 +356,8 @@ defmodule SymphonyElixir.AgentRunner do
         turn_number: turn_number,
         max_turns: max_turns,
         prompt_bytes: byte_size(prompt),
-        prompt_words: prompt_word_count(prompt)
+        prompt_words: prompt_word_count(prompt),
+        ponytail: Config.ponytail_policy()
       }
     })
   end

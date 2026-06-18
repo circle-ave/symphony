@@ -3074,6 +3074,48 @@ defmodule SymphonyElixir.CoreTest do
     assert PromptBuilder.build_prompt(issue) == "Ticket MT-701"
   end
 
+  test "prompt builder appends default-on Ponytail policy when workflow does not disable it" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_ponytail: nil,
+      prompt: "Ticket {{ issue.identifier }}"
+    )
+
+    issue = %Issue{
+      identifier: "MT-PONY",
+      title: "Use Ponytail",
+      description: "Keep it small",
+      state: "Todo",
+      url: "https://example.org/issues/MT-PONY",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert Config.ponytail_policy() == %{"enabled" => true, "mode" => "full", "cohort" => "ponytail:full"}
+    assert prompt =~ "Ticket MT-PONY"
+    assert prompt =~ "## Ponytail Mode"
+    assert prompt =~ "Use the laziest solution that actually works"
+  end
+
+  test "prompt builder skips Ponytail policy when disabled" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_ponytail: "off",
+      prompt: "Ticket {{ issue.identifier }}"
+    )
+
+    issue = %Issue{
+      identifier: "MT-NO-PONY",
+      title: "Disable Ponytail",
+      description: "Control cohort",
+      state: "Todo",
+      url: "https://example.org/issues/MT-NO-PONY",
+      labels: []
+    }
+
+    assert Config.ponytail_policy() == %{"enabled" => false, "mode" => "off", "cohort" => "ponytail:off"}
+    assert PromptBuilder.build_prompt(issue) == "Ticket MT-NO-PONY"
+  end
+
   test "prompt builder derives prompt phase from issue state" do
     assert PromptBuilder.phase_for_issue(%{state: "Backlog"}) == "idle"
     assert PromptBuilder.phase_for_issue(%{state: "Done"}) == "terminal"
@@ -3896,7 +3938,8 @@ defmodule SymphonyElixir.CoreTest do
                           turn_number: 1,
                           max_turns: 20,
                           prompt_bytes: prompt_bytes,
-                          prompt_words: prompt_words
+                          prompt_words: prompt_words,
+                          ponytail: %{"enabled" => false, "mode" => "off", "cohort" => "ponytail:off"}
                         }
                       }},
                      500

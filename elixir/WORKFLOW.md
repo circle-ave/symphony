@@ -42,6 +42,7 @@ hooks:
 agent:
   max_concurrent_agents: 6
   max_turns: 5
+  ponytail: full
   scope_audit:
     enabled: true
     command: >-

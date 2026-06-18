@@ -144,6 +144,7 @@ defmodule SymphonyElixirWeb.Presenter do
       started_at: iso8601(entry.started_at),
       last_event_at: iso8601(entry.last_codex_timestamp),
       stream_window: stream_window_payload(entry, last_message),
+      prompt_policy: Map.get(entry, :prompt_policy),
       tokens: %{
         input_tokens: entry.codex_input_tokens,
         output_tokens: entry.codex_output_tokens,
@@ -226,6 +227,7 @@ defmodule SymphonyElixirWeb.Presenter do
       last_message: summarize_message(running.last_codex_message),
       last_event_at: iso8601(running.last_codex_timestamp),
       stream_window: stream_window_payload(running, summarize_message(running.last_codex_message)),
+      prompt_policy: Map.get(running, :prompt_policy),
       tokens: %{
         input_tokens: running.codex_input_tokens,
         output_tokens: running.codex_output_tokens,

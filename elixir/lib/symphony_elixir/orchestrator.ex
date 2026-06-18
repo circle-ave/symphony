@@ -2122,6 +2122,7 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_input_tokens: 0,
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
+            prompt_policy: nil,
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now()
@@ -3209,6 +3210,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
           codex_stream_window: Map.get(metadata, :codex_stream_window, []),
+          prompt_policy: Map.get(metadata, :prompt_policy),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -3777,6 +3779,7 @@ defmodule SymphonyElixir.Orchestrator do
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
+        prompt_policy: prompt_policy_for_update(Map.get(running_entry, :prompt_policy), update),
         turn_count: turn_count_for_update(turn_count, existing_session_id, update)
       }),
       token_delta
@@ -3786,6 +3789,16 @@ defmodule SymphonyElixir.Orchestrator do
   defp put_running_entry(%State{running: running} = state, issue_id, running_entry) do
     %{state | running: Map.put(running, issue_id, running_entry)}
   end
+
+  defp prompt_policy_for_update(_existing, %{event: :prompt_prepared, payload: %{ponytail: %{} = ponytail}}) do
+    %{ponytail: ponytail}
+  end
+
+  defp prompt_policy_for_update(_existing, %{event: :prompt_prepared, payload: %{"ponytail" => %{} = ponytail}}) do
+    %{ponytail: ponytail}
+  end
+
+  defp prompt_policy_for_update(existing, _update), do: existing
 
   defp token_snapshot(running_entry) when is_map(running_entry) do
     %{

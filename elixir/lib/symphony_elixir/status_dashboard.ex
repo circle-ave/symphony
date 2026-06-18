@@ -1199,6 +1199,7 @@ defmodule SymphonyElixir.StatusDashboard do
     max_turns = map_value(payload, ["max_turns", :max_turns]) || "?"
     prompt_words = map_value(payload, ["prompt_words", :prompt_words])
     prompt_bytes = map_value(payload, ["prompt_bytes", :prompt_bytes])
+    ponytail = map_value(payload, ["ponytail", :ponytail])
 
     size =
       cond do
@@ -1215,7 +1216,7 @@ defmodule SymphonyElixir.StatusDashboard do
           "unknown size"
       end
 
-    "prompt prepared (phase #{phase}, turn #{turn_number}/#{max_turns}, #{size})"
+    "prompt prepared (phase #{phase}, turn #{turn_number}/#{max_turns}, #{size}, #{ponytail_label(ponytail)})"
   end
 
   defp humanize_codex_event(:turn_input_required, _message, _payload), do: "turn blocked: waiting for user input"
@@ -1265,6 +1266,20 @@ defmodule SymphonyElixir.StatusDashboard do
   defp humanize_codex_event(:turn_cancelled, _message, _payload), do: "turn cancelled"
   defp humanize_codex_event(:malformed, _message, _payload), do: "malformed JSON event from codex"
   defp humanize_codex_event(_event, _message, _payload), do: nil
+
+  defp ponytail_label(%{} = policy) do
+    enabled = map_value(policy, ["enabled", :enabled])
+    mode = map_value(policy, ["mode", :mode]) || "full"
+    cohort = map_value(policy, ["cohort", :cohort])
+
+    if enabled == false do
+      "ponytail off"
+    else
+      "ponytail #{cohort || mode}"
+    end
+  end
+
+  defp ponytail_label(_policy), do: "ponytail unknown"
 
   defp unwrap_codex_message_payload(%{} = message) do
     cond do

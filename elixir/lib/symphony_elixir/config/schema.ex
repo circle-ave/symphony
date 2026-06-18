@@ -290,6 +290,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:local_bench_gate_retry_cooldown_ms, :integer, default: 60_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
       field(:roles, :map, default: %{})
+      field(:ponytail, Schema.StringOrMap, default: %{"enabled" => true, "mode" => "full", "cohort" => "ponytail:full"})
       embeds_one(:scope_audit, ScopeAudit, on_replace: :update, defaults_to_struct: true)
     end
 
@@ -305,7 +306,8 @@ defmodule SymphonyElixir.Config.Schema do
           :cloud_gate_retry_cooldown_ms,
           :local_bench_gate_retry_cooldown_ms,
           :max_concurrent_agents_by_state,
-          :roles
+          :roles,
+          :ponytail
         ],
         empty_values: []
       )

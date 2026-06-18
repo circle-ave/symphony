@@ -153,6 +153,12 @@ defmodule SymphonyElixir.Config do
     insert_command_flags(command, flags)
   end
 
+  @spec ponytail_policy() :: map()
+  def ponytail_policy do
+    settings!().agent.ponytail
+    |> normalize_ponytail_policy()
+  end
+
   defp validate_semantics(settings) do
     case validate_repository_selection(settings) do
       :ok -> validate_tracker_semantics(settings)
@@ -344,9 +350,7 @@ defmodule SymphonyElixir.Config do
 
   defp toml_value(values) when is_map(values) do
     "{ " <>
-      (values
-       |> Enum.map(fn {key, value} -> "#{toml_key(key)} = #{toml_value(value)}" end)
-       |> Enum.join(", ")) <> " }"
+      Enum.map_join(values, ", ", fn {key, value} -> "#{toml_key(key)} = #{toml_value(value)}" end) <> " }"
   end
 
   defp toml_value(value), do: value |> to_string() |> toml_value()
@@ -365,4 +369,45 @@ defmodule SymphonyElixir.Config do
   end
 
   defp map_get(_map, _key), do: nil
+
+  defp normalize_ponytail_policy(nil), do: %{"enabled" => true, "mode" => "full", "cohort" => "ponytail:full"}
+
+  defp normalize_ponytail_policy(value) when is_binary(value) do
+    case value |> String.trim() |> String.downcase() do
+      mode when mode in ["off", "false", "disabled", "none"] ->
+        %{"enabled" => false, "mode" => "off", "cohort" => "ponytail:off"}
+
+      mode when mode in ["lite", "full", "ultra"] ->
+        %{"enabled" => true, "mode" => mode, "cohort" => "ponytail:#{mode}"}
+
+      _ ->
+        %{"enabled" => true, "mode" => "full", "cohort" => "ponytail:full"}
+    end
+  end
+
+  defp normalize_ponytail_policy(%{} = value) do
+    enabled = map_get(value, "enabled")
+    mode = map_get(value, "mode") || map_get(value, "level") || "full"
+    cohort = map_get(value, "cohort")
+
+    policy = normalize_ponytail_policy(to_string(mode))
+    policy = Map.put(policy, "enabled", enabled_value(enabled, policy["enabled"]))
+
+    policy
+    |> Map.put("cohort", normalize_ponytail_cohort(cohort, policy))
+  end
+
+  defp normalize_ponytail_policy(_value), do: normalize_ponytail_policy(nil)
+
+  defp enabled_value(nil, default), do: default
+
+  defp enabled_value(value, _default)
+       when value in [false, "false", "False", "off", "Off", "disabled", "Disabled", "0"],
+       do: false
+
+  defp enabled_value(_value, _default), do: true
+
+  defp normalize_ponytail_cohort(cohort, _policy) when is_binary(cohort) and cohort != "", do: cohort
+  defp normalize_ponytail_cohort(_cohort, %{"enabled" => false}), do: "ponytail:off"
+  defp normalize_ponytail_cohort(_cohort, %{"mode" => mode}), do: "ponytail:#{mode}"
 end
