@@ -75,6 +75,36 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.settings!().agent.scope_audit.timeout_ms == 120_000
 
     write_workflow_file!(Workflow.workflow_file_path(),
+      codex_tool_allowlist: %{
+        mcp_server_blocklist: ["jira", "playwright"],
+        plugin_blocklist: ["chrome@openai-bundled", "ponytail@ponytail"],
+        surfaces: %{
+          root: %{
+            plugins: ["ponytail@ponytail"],
+            mcp_servers: %{
+              playwright: %{command: "npx", args: ["@playwright/mcp@latest", "--headless"]}
+            }
+          },
+          router: %{plugins: [], mcp_servers: %{}}
+        }
+      }
+    )
+
+    root_command = Config.codex_command_for_tool_surface("codex app-server", :root)
+    assert root_command =~ "--config 'mcp_servers.jira.enabled=false'"
+    assert root_command =~ ~s(--config 'mcp_servers.playwright={ args = ["@playwright/mcp@latest", "--headless"], command = "npx", enabled = true }')
+    assert root_command =~ "--config 'features.plugins=true'"
+    assert root_command =~ ~s(--config 'plugins."chrome@openai-bundled".enabled=false')
+    assert root_command =~ ~s(--config 'plugins."ponytail@ponytail".enabled=true')
+    assert root_command =~ " app-server"
+
+    router_command = Config.codex_command_for_tool_surface("codex app-server", :router)
+    assert router_command =~ "--config 'mcp_servers.jira.enabled=false'"
+    assert router_command =~ "--config 'mcp_servers.playwright.enabled=false'"
+    assert router_command =~ "--config 'features.plugins=false'"
+    refute router_command =~ "ponytail@ponytail\".enabled=true"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
       agent_roles: %{
         "waiting_blocker_audit" => %{
           "command" => "echo ok",

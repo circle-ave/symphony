@@ -53,6 +53,7 @@ defmodule SymphonyElixir.Codex.ModelRouter do
 
     runner_opts = [
       command: router_command(router_config, default_route.command),
+      tool_surface: :router,
       worker_host: worker_host,
       approval_policy: router_approval_policy(router_config),
       thread_sandbox: router_thread_sandbox(router_config),

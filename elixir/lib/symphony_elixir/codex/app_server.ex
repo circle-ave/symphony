@@ -40,7 +40,11 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
-    command = Keyword.get(opts, :command, Config.settings!().codex.command)
+
+    command =
+      opts
+      |> Keyword.get(:command, Config.settings!().codex.command)
+      |> Config.codex_command_for_tool_surface(Keyword.get(opts, :tool_surface, :root))
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
          {:ok, port} <- start_port(expanded_workspace, worker_host, command) do

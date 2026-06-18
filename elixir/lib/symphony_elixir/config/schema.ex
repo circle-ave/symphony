@@ -344,6 +344,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:thread_sandbox, :string, default: "workspace-write")
       field(:turn_sandbox_policy, :map)
       field(:model_router, :map, default: %{})
+      field(:tool_allowlist, :map, default: %{})
       field(:turn_timeout_ms, :integer, default: 3_600_000)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
@@ -360,6 +361,7 @@ defmodule SymphonyElixir.Config.Schema do
           :thread_sandbox,
           :turn_sandbox_policy,
           :model_router,
+          :tool_allowlist,
           :turn_timeout_ms,
           :read_timeout_ms,
           :stall_timeout_ms
@@ -668,7 +670,8 @@ defmodule SymphonyElixir.Config.Schema do
       settings.codex
       | approval_policy: normalize_keys(settings.codex.approval_policy),
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy),
-        model_router: normalize_optional_map(settings.codex.model_router) || %{}
+        model_router: normalize_optional_map(settings.codex.model_router) || %{},
+        tool_allowlist: normalize_optional_map(settings.codex.tool_allowlist) || %{}
     }
 
     %{settings | tracker: tracker, jira: jira, workspace: workspace, repositories: repositories, codex: codex}

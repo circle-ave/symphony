@@ -144,6 +144,15 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec codex_command_for_tool_surface(String.t(), atom() | String.t() | nil) :: String.t()
+  def codex_command_for_tool_surface(command, surface) when is_binary(command) do
+    flags =
+      settings!()
+      |> then(&tool_allowlist_flags(&1.codex.tool_allowlist, surface))
+
+    insert_command_flags(command, flags)
+  end
+
   defp validate_semantics(settings) do
     case validate_repository_selection(settings) do
       :ok -> validate_tracker_semantics(settings)
@@ -225,4 +234,135 @@ defmodule SymphonyElixir.Config do
         "Invalid WORKFLOW.md config: #{inspect(other)}"
     end
   end
+
+  defp tool_allowlist_flags(allowlist, surface) when is_map(allowlist) do
+    surface_config =
+      allowlist
+      |> map_get("surfaces")
+      |> case do
+        %{} = surfaces -> map_get(surfaces, surface_name(surface)) || %{}
+        _ -> %{}
+      end
+
+    allowed_mcp = normalize_allowlist_map(map_get(surface_config, "mcp_servers"))
+    allowed_plugins = normalize_allowlist_map(map_get(surface_config, "plugins"))
+
+    mcp_disable_flags(map_get(allowlist, "mcp_server_blocklist"), allowed_mcp) ++
+      mcp_enable_flags(allowed_mcp) ++
+      plugin_flags(map_get(allowlist, "plugin_blocklist"), allowed_plugins)
+  end
+
+  defp tool_allowlist_flags(_allowlist, _surface), do: []
+
+  defp mcp_disable_flags(blocklist, allowed) do
+    blocklist
+    |> normalize_string_list()
+    |> Enum.reject(&Map.has_key?(allowed, &1))
+    |> Enum.map(&config_flag("mcp_servers.#{&1}.enabled=false"))
+  end
+
+  defp mcp_enable_flags(allowed) do
+    Enum.map(allowed, fn
+      {server, %{} = config} ->
+        config_flag("mcp_servers.#{server}=#{toml_value(Map.put(config, "enabled", true))}")
+
+      {server, true} ->
+        config_flag("mcp_servers.#{server}.enabled=true")
+
+      {server, _value} ->
+        config_flag("mcp_servers.#{server}.enabled=true")
+    end)
+  end
+
+  defp plugin_flags(blocklist, allowed) do
+    cond do
+      map_size(allowed) > 0 ->
+        [config_flag("features.plugins=true")] ++
+          (blocklist
+           |> normalize_string_list()
+           |> Enum.reject(&Map.has_key?(allowed, &1))
+           |> Enum.map(&config_flag("plugins.#{toml_quoted_key(&1)}.enabled=false"))) ++
+          Enum.map(allowed, fn {plugin, _value} -> config_flag("plugins.#{toml_quoted_key(plugin)}.enabled=true") end)
+
+      normalize_string_list(blocklist) != [] ->
+        [config_flag("features.plugins=false")]
+
+      true ->
+        []
+    end
+  end
+
+  defp normalize_allowlist_map(nil), do: %{}
+
+  defp normalize_allowlist_map(values) when is_list(values) do
+    values
+    |> normalize_string_list()
+    |> Map.new(&{&1, true})
+  end
+
+  defp normalize_allowlist_map(values) when is_map(values) do
+    Map.new(values, fn {key, value} -> {to_string(key), value} end)
+  end
+
+  defp normalize_allowlist_map(_values), do: %{}
+
+  defp normalize_string_list(values) when is_list(values) do
+    values
+    |> Enum.map(&(to_string(&1) |> String.trim()))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp normalize_string_list(_values), do: []
+
+  defp surface_name(nil), do: "root"
+  defp surface_name(surface) when is_atom(surface), do: surface |> Atom.to_string() |> String.trim()
+  defp surface_name(surface), do: surface |> to_string() |> String.trim()
+
+  defp insert_command_flags(command, []), do: command
+
+  defp insert_command_flags(command, flags) do
+    flag_text = Enum.join(flags, " ")
+
+    case Regex.run(~r/^(.*?)(\s+app-server\s*)$/, command) do
+      [_, prefix, suffix] -> String.trim_trailing(prefix) <> " " <> flag_text <> suffix
+      _ -> command <> " " <> flag_text
+    end
+  end
+
+  defp config_flag(config), do: "--config #{shell_quote(config)}"
+
+  defp shell_quote(value), do: "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
+
+  defp toml_value(value) when is_binary(value), do: Jason.encode!(value)
+  defp toml_value(value) when is_boolean(value), do: to_string(value)
+  defp toml_value(value) when is_integer(value) or is_float(value), do: to_string(value)
+
+  defp toml_value(values) when is_list(values) do
+    "[" <> Enum.map_join(values, ", ", &toml_value/1) <> "]"
+  end
+
+  defp toml_value(values) when is_map(values) do
+    "{ " <>
+      (values
+       |> Enum.map(fn {key, value} -> "#{toml_key(key)} = #{toml_value(value)}" end)
+       |> Enum.join(", ")) <> " }"
+  end
+
+  defp toml_value(value), do: value |> to_string() |> toml_value()
+
+  defp toml_key(key) do
+    key = to_string(key)
+    if Regex.match?(~r/^[A-Za-z0-9_-]+$/, key), do: key, else: toml_quoted_key(key)
+  end
+
+  defp toml_quoted_key(key), do: Jason.encode!(to_string(key))
+
+  defp map_get(%{} = map, key) do
+    Map.get(map, key) || Map.get(map, String.to_atom(key))
+  rescue
+    ArgumentError -> Map.get(map, key)
+  end
+
+  defp map_get(_map, _key), do: nil
 end

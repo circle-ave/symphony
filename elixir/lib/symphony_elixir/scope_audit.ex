@@ -102,6 +102,7 @@ defmodule SymphonyElixir.ScopeAudit do
 
     session_opts = [
       command: audit_command(audit, settings),
+      tool_surface: :scope_audit,
       worker_host: Keyword.get(opts, :worker_host),
       approval_policy: "never",
       dynamic_tools: [],

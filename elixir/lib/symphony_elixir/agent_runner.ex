@@ -255,9 +255,11 @@ defmodule SymphonyElixir.AgentRunner do
     opts = Keyword.merge(opts, command: model_route.command)
 
     if Keyword.get(opts, :comment_reply, false) do
-      Keyword.put(opts, :dynamic_tools, DynamicTool.comment_reply_tool_specs())
-    else
       opts
+      |> Keyword.put(:dynamic_tools, DynamicTool.comment_reply_tool_specs())
+      |> Keyword.put(:tool_surface, :comment_reply)
+    else
+      Keyword.put(opts, :tool_surface, :root)
     end
   end
 
