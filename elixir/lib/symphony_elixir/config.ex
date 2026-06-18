@@ -146,11 +146,12 @@ defmodule SymphonyElixir.Config do
 
   @spec codex_command_for_tool_surface(String.t(), atom() | String.t() | nil) :: String.t()
   def codex_command_for_tool_surface(command, surface) when is_binary(command) do
-    flags =
-      settings!()
-      |> then(&tool_allowlist_flags(&1.codex.tool_allowlist, surface))
+    allowlist = settings!().codex.tool_allowlist
+    flags = tool_allowlist_flags(allowlist, surface)
 
-    insert_command_flags(command, flags)
+    command
+    |> insert_command_flags(flags)
+    |> maybe_prefix_isolated_codex_home(allowlist)
   end
 
   @spec ponytail_policy() :: map()
@@ -260,11 +261,67 @@ defmodule SymphonyElixir.Config do
 
   defp tool_allowlist_flags(_allowlist, _surface), do: []
 
+  defp maybe_prefix_isolated_codex_home(command, allowlist) when is_map(allowlist) do
+    if truthy_value?(map_get(allowlist, "isolated_home")) and not codex_home_prefixed?(command) do
+      home = prepare_isolated_codex_home!(allowlist)
+      "CODEX_HOME=#{shell_quote(home)} #{command}"
+    else
+      command
+    end
+  end
+
+  defp maybe_prefix_isolated_codex_home(command, _allowlist), do: command
+
+  defp codex_home_prefixed?(command), do: Regex.match?(~r/(^|\s)CODEX_HOME=/, command)
+
+  defp prepare_isolated_codex_home!(allowlist) do
+    home =
+      allowlist
+      |> map_get("config_home")
+      |> isolated_codex_home_path()
+
+    File.mkdir_p!(home)
+    copy_codex_auth(home)
+    home
+  end
+
+  defp isolated_codex_home_path(path) when is_binary(path) and path != "" do
+    Path.expand(path, Path.dirname(Workflow.workflow_file_path()))
+  end
+
+  defp isolated_codex_home_path(_path) do
+    hash =
+      :sha256
+      |> :crypto.hash(Workflow.workflow_file_path())
+      |> Base.url_encode64(padding: false)
+      |> binary_part(0, 12)
+
+    Path.join(System.tmp_dir!(), "symphony-codex-home-#{hash}")
+  end
+
+  defp copy_codex_auth(home) do
+    source_home = System.get_env("CODEX_HOME") || Path.join(System.user_home!(), ".codex")
+    source = Path.join(source_home, "auth.json")
+    destination = Path.join(home, "auth.json")
+
+    cond do
+      Path.expand(source) == Path.expand(destination) ->
+        :ok
+
+      File.exists?(source) ->
+        File.cp!(source, destination)
+        File.chmod(destination, 0o600)
+
+      true ->
+        :ok
+    end
+  end
+
   defp mcp_disable_flags(blocklist, allowed) do
     blocklist
     |> normalize_string_list()
     |> Enum.reject(&Map.has_key?(allowed, &1))
-    |> Enum.map(&config_flag("mcp_servers.#{&1}.enabled=false"))
+    |> Enum.map(&config_flag("mcp_servers.#{&1}=#{toml_value(disabled_mcp_server_config())}"))
   end
 
   defp mcp_enable_flags(allowed) do
@@ -312,6 +369,10 @@ defmodule SymphonyElixir.Config do
 
   defp normalize_allowlist_map(_values), do: %{}
 
+  defp disabled_mcp_server_config do
+    %{"command" => "true", "args" => [], "enabled" => false}
+  end
+
   defp normalize_string_list(values) when is_list(values) do
     values
     |> Enum.map(&(to_string(&1) |> String.trim()))
@@ -320,6 +381,12 @@ defmodule SymphonyElixir.Config do
   end
 
   defp normalize_string_list(_values), do: []
+
+  defp truthy_value?(true), do: true
+  defp truthy_value?("true"), do: true
+  defp truthy_value?("True"), do: true
+  defp truthy_value?("1"), do: true
+  defp truthy_value?(_value), do: false
 
   defp surface_name(nil), do: "root"
   defp surface_name(surface) when is_atom(surface), do: surface |> Atom.to_string() |> String.trim()

@@ -91,7 +91,7 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     root_command = Config.codex_command_for_tool_surface("codex app-server", :root)
-    assert root_command =~ "--config 'mcp_servers.jira.enabled=false'"
+    assert root_command =~ ~s(--config 'mcp_servers.jira={ args = [], command = "true", enabled = false }')
     assert root_command =~ ~s(--config 'mcp_servers.playwright={ args = ["@playwright/mcp@latest", "--headless"], command = "npx", enabled = true }')
     assert root_command =~ "--config 'features.plugins=true'"
     assert root_command =~ ~s(--config 'plugins."chrome@openai-bundled".enabled=false')
@@ -99,10 +99,25 @@ defmodule SymphonyElixir.CoreTest do
     assert root_command =~ " app-server"
 
     router_command = Config.codex_command_for_tool_surface("codex app-server", :router)
-    assert router_command =~ "--config 'mcp_servers.jira.enabled=false'"
-    assert router_command =~ "--config 'mcp_servers.playwright.enabled=false'"
+    assert router_command =~ ~s(--config 'mcp_servers.jira={ args = [], command = "true", enabled = false }')
+    assert router_command =~ ~s(--config 'mcp_servers.playwright={ args = [], command = "true", enabled = false }')
     assert router_command =~ "--config 'features.plugins=false'"
     refute router_command =~ "ponytail@ponytail\".enabled=true"
+
+    codex_home = Path.join(System.tmp_dir!(), "symphony-elixir-codex-home-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(codex_home) end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_tool_allowlist: %{
+        isolated_home: true,
+        config_home: codex_home,
+        surfaces: %{root: %{mcp_servers: %{}}}
+      }
+    )
+
+    isolated_command = Config.codex_command_for_tool_surface("codex app-server", :root)
+    assert isolated_command =~ "CODEX_HOME='#{codex_home}' codex"
+    assert File.dir?(codex_home)
 
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_roles: %{

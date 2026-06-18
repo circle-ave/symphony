@@ -64,6 +64,7 @@ codex:
     --config skills.bundled.enabled=false
     --config 'model="gpt-5.5"' --config model_reasoning_effort=medium app-server
   tool_allowlist:
+    isolated_home: true
     mcp_server_blocklist:
       - blender
       - chrome-devtools
