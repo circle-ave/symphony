@@ -224,6 +224,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp execute_linear_comment_reply(arguments, opts) do
     with {:ok, issue} <- comment_reply_issue(opts),
          {:ok, params} <- normalize_linear_comment_reply_arguments(arguments),
+         :ok <- authorize_comment_reply_state(params),
          :ok <- save_comment_reply_workpad(issue, params, opts),
          :ok <- maybe_move_comment_reply_issue(issue, params),
          :ok <- create_comment_reply(issue, params) do
@@ -299,6 +300,18 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp authorize_comment_reply_state(%{state_name: state_name}) when state_name in [nil, ""], do: :ok
+
+  defp authorize_comment_reply_state(%{state_name: state_name}) do
+    if review_state?(state_name) do
+      review_transition_error("Blocked review transition: comment reply mode cannot move issues to review.", %{
+        "stateName" => state_name
+      })
+    else
+      :ok
     end
   end
 
@@ -615,14 +628,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp review_guard_required?(opts) do
-    case Keyword.get(opts, :workspace) do
-      workspace when is_binary(workspace) ->
-        File.exists?(Path.join(workspace, ".symphony/review-ready-required")) or
-          File.exists?(Path.join(workspace, "scripts/review_readiness_check.mjs"))
-
-      _ ->
-        false
-    end
+    is_binary(Keyword.get(opts, :workspace))
   end
 
   defp issue_state_update_query?(query) do

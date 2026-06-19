@@ -308,7 +308,7 @@ Blocked-access packet:
 - Use only for missing required tools/auth/permissions after documented fallbacks.
 - Product, scope, acceptance, and target-surface ambiguity are not access blockers; use the Scope Confidence Gate and move the issue to `Waiting`.
 - GitHub access is not a blocker by default; try alternate auth/remote/connector fallbacks first.
-- If blocked by non-GitHub access, record missing item, impact, and exact unblock action in the workpad, then move to `Human Review`.
+- If blocked by non-GitHub access that prevents implementation or required acceptance, record the missing item, impact, and exact unblock action in the workpad, then move to `Waiting`.
 
 Out-of-scope improvements:
 - Do not expand scope. Create a separate Backlog issue with clear title, description, acceptance criteria, same project, `related` link, and `blockedBy` when dependent.

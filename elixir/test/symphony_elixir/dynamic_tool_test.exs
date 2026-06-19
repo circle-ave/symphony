@@ -153,6 +153,35 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert reply =~ "<!-- symphony-comment-reply -->"
   end
 
+  test "linear_comment_reply cannot move issues to review" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    issue = %Issue{
+      id: "issue-comment-reply",
+      identifier: "MT-900",
+      active_workpad_comment_id: "comment-workpad"
+    }
+
+    response =
+      DynamicTool.execute(
+        "linear_comment_reply",
+        %{
+          "workpad_body" => "## Codex Workpad\n\n### Notes\n- Waiting on review.",
+          "reply_body" => "Ready for review.",
+          "state_name" => "In Review"
+        },
+        issue: issue,
+        linear_client: fn _query, _variables, _opts ->
+          flunk("comment reply should reject review state before touching Linear")
+        end
+      )
+
+    assert response["success"] == false
+
+    assert Jason.decode!(response["output"])["error"]["message"] ==
+             "Blocked review transition: comment reply mode cannot move issues to review."
+  end
+
   test "linear_graphql returns successful GraphQL responses as tool text" do
     test_pid = self()
 
@@ -407,6 +436,36 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       assert payload["error"]["message"] == "Blocked review transition: missing review readiness proof."
       assert payload["error"]["details"]["path"] == Path.join(workspace, ".symphony/review-ready.json")
+
+      assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
+      refute_received {:linear_client_called, :state_update, _variables}
+    end)
+  end
+
+  test "linear_graphql blocks review state updates by default when workspace exists" do
+    test_pid = self()
+
+    with_workspace(fn workspace ->
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
+          linear_client: review_state_guard_client(test_pid, "In Review")
+        )
+
+      assert response["success"] == false
+
+      assert Jason.decode!(response["output"])["error"]["message"] ==
+               "Blocked review transition: missing review readiness proof."
 
       assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
       refute_received {:linear_client_called, :state_update, _variables}
@@ -1074,7 +1133,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["output"] == ":ok"
   end
 
-  defp with_guarded_workspace(fun) do
+  defp with_guarded_workspace(fun), do: with_workspace(fun)
+
+  defp with_workspace(fun) do
     workspace =
       Path.join(
         System.tmp_dir!(),
@@ -1082,8 +1143,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       )
 
     try do
-      File.mkdir_p!(Path.join(workspace, "scripts"))
-      File.write!(Path.join(workspace, "scripts/review_readiness_check.mjs"), "")
+      File.mkdir_p!(workspace)
       fun.(workspace)
     after
       File.rm_rf(workspace)
