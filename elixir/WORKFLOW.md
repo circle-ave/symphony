@@ -282,8 +282,9 @@ Scope Confidence Gate:
 Execution loop:
 - Implement against the workpad checklist. Keep it current after meaningful milestones.
 - Treat ticket `Validation`, `Test Plan`, or `Testing` sections as mandatory.
-- For user-facing work, required acceptance includes an observe-only browser pass against the final review target; do not remount UI, patch app state, force success with internals, or count self-healing helpers as acceptance.
-- Every completed issue needs a functional `Demo / Review Recipe` that requires no reviewer setup. For backend, data, analytics, pipeline, or workflow work, publish or identify the app/runtime route, review environment, API endpoint, CLI command output artifact, or dashboard that demonstrates the ticket behavior. Do not use the PR, source diff, CI run, Linear issue, Jira issue, localhost, or an unpublished branch as the primary `Open:` target.
+- For user-facing work, required acceptance includes an observe-only browser pass against the final review target unless this is prototype review. Do not remount UI, patch app state, force success with internals, or count self-healing helpers as acceptance.
+- Prototype review may skip deployed/reviewer-accessible runtime proof when deploy would add cost or operational churn. Record it as `prototypeReview: true` and `skipped: deployed browser proof; prototype/cost`.
+- Every completed issue needs a functional `Demo / Review Recipe`. For prototype review, localhost or a reproducible command/artifact is acceptable. For production review, it must require no reviewer setup: publish or identify the app/runtime route, review environment, API endpoint, CLI command output artifact, or dashboard that demonstrates the ticket behavior. Do not use the PR, source diff, CI run, Linear issue, Jira issue, or an unpublished branch as the primary `Open:` target.
 - Temporary local proof edits are allowed only for verification and must be reverted before commit.
 - Before each push, rerun the required validation and fix failures.
 - Rebase or merge latest `origin/{{ repository.branch }}`, resolve conflicts, rerun checks, commit on `{{ repository.branch }}`, and push that same branch. Do not create a feature branch or PR unless a human explicitly asks for one.
@@ -297,10 +298,10 @@ Completion bar before `Human Review`:
 - Workpad plan, acceptance criteria, and validation exactly match completed work.
 - `Scope Confidence` is `clear`, with no unresolved `Confusions`.
 - Required tests/validation are green for the latest commit.
-- User-facing work has a passing independent acceptance review and current no-setup `Demo / Review Recipe`; include login credentials when required, otherwise `Login: not required`.
-- Non-user-facing work may mark independent browser acceptance as not applicable, but its `Demo / Review Recipe` must still demonstrate runtime/app behavior through an exact reviewer-reachable URL or artifact and must not be a PR/status-check/local-setup inspection recipe.
+- User-facing work has a passing independent acceptance review and current no-setup `Demo / Review Recipe`, unless `prototypeReview: true`; include login credentials when required, otherwise `Login: not required`.
+- Non-user-facing work may mark independent browser acceptance as not applicable. Its `Demo / Review Recipe` must still demonstrate runtime/app behavior through a URL, command, or artifact, and production review must use a reviewer-reachable target.
 - Shared development branch commit is pushed and required checks are green.
-- Review readiness proof includes `developmentBranchReviewed: true`, `sharedBranchCommitted: true`, `targetContainsSharedBranchCommit: true`, `reviewBranch: "{{ repository.branch }}"`, `reviewRecipeAccessible: true`, and `reviewRecipeUrl` matching the workpad `Open:` target.
+- Review readiness proof includes `developmentBranchReviewed: true`, `sharedBranchCommitted: true`, `targetContainsSharedBranchCommit: true`, and `reviewBranch: "{{ repository.branch }}"`. Production review also requires `reviewRecipeAccessible: true` and `reviewRecipeUrl` matching the workpad `Open:` target; prototype review uses `prototypeReview: true` instead.
 - Only then move to `Human Review`.
 {% endif %}
 

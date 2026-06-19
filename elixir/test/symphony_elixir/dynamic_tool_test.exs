@@ -519,6 +519,52 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     end)
   end
 
+  test "linear_graphql allows prototype review without deployed browser acceptance proof" do
+    test_pid = self()
+
+    with_guarded_workspace(fn workspace ->
+      write_review_ready_proof!(workspace, %{
+        "schema" => "symphony.review-ready.v1",
+        "issue" => "MT-1",
+        "workspaceHead" => "head-123",
+        "prototypeReview" => true,
+        "reviewReadinessCheckPassed" => true,
+        "workpadCompleted" => true,
+        "functionalReviewRecipePassed" => false,
+        "reviewRecipeAccessible" => false,
+        "reviewRecipeUrl" => "http://localhost:3000/MT-1",
+        "developmentBranchReviewed" => true,
+        "sharedBranchCommitted" => true,
+        "targetContainsSharedBranchCommit" => true,
+        "reviewBranch" => "develop",
+        "validationPassed" => true,
+        "deliverableReviewPassed" => true,
+        "screenshotArtifactVerified" => false
+      })
+
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{
+            "query" => """
+            mutation UpdateIssueState($id: String!, $stateId: String!) {
+              issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+            }
+            """,
+            "variables" => %{"id" => "issue-1", "stateId" => "state-review"}
+          },
+          workspace: workspace,
+          issue: %Issue{id: "issue-1", identifier: "MT-1"},
+          git_head: "head-123",
+          linear_client: review_state_guard_client(test_pid, "In Review")
+        )
+
+      assert response["success"] == true
+      assert_received {:linear_client_called, :guard_lookup, %{"issueId" => "issue-1"}}
+      assert_received {:linear_client_called, :state_update, %{"id" => "issue-1", "stateId" => "state-review"}}
+    end)
+  end
+
   test "linear_graphql blocks guarded review updates without independent acceptance proof for user-facing work" do
     test_pid = self()
 

@@ -837,7 +837,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     [
       "reviewReadinessCheckPassed",
       "workpadCompleted",
-      "reviewRecipeAccessible",
       "developmentBranchReviewed",
       "sharedBranchCommitted",
       "targetContainsSharedBranchCommit",
@@ -847,10 +846,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp user_facing_review_ready_fields(proof) do
-    if proof_user_facing?(proof) do
-      ["functionalReviewRecipePassed", "screenshotArtifactVerified"]
-    else
-      []
+    cond do
+      prototype_review?(proof) -> []
+      proof_user_facing?(proof) -> ["functionalReviewRecipePassed", "screenshotArtifactVerified"]
+      true -> []
     end
   end
 
@@ -865,6 +864,19 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp validate_review_recipe_access(proof) do
+    cond do
+      prototype_review?(proof) ->
+        :ok
+
+      proof_value(proof, "reviewRecipeAccessible") != true ->
+        missing_proof_field(proof, "reviewRecipeAccessible")
+
+      true ->
+        validate_accessible_review_recipe_url(proof)
+    end
+  end
+
+  defp validate_accessible_review_recipe_url(proof) do
     case proof_value(proof, "reviewRecipeUrl") do
       url when is_binary(url) and url != "" ->
         case ReviewRecipe.validate_accessible_url(url) do
@@ -907,7 +919,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp validate_acceptance_agent_review(proof, workspace, expected_issue, target, opts) do
-    if proof_user_facing?(proof) do
+    if proof_user_facing?(proof) and not prototype_review?(proof) do
       with {:ok, review} <- read_acceptance_agent_review(proof, workspace),
            :ok <- validate_acceptance_agent_issue(review, expected_issue, target),
            :ok <- validate_acceptance_agent_fields(review) do
@@ -1164,6 +1176,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp proof_user_facing?(proof) do
     proof_value(proof, "userFacing") != false
+  end
+
+  defp prototype_review?(proof) do
+    proof_value(proof, "prototypeReview") == true
   end
 
   defp workspace_head(workspace, opts) do
