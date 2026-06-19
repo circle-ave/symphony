@@ -31,6 +31,14 @@ defmodule SymphonyElixir.Linear.Adapter do
   }
   """
 
+  @delegate_issue_mutation """
+  mutation SymphonyDelegateIssue($issueId: String!, $delegateId: String!) {
+    issueUpdate(id: $issueId, input: {delegateId: $delegateId}) {
+      success
+    }
+  }
+  """
+
   @viewer_query """
   query SymphonyLinearViewer {
     viewer {
@@ -109,10 +117,10 @@ defmodule SymphonyElixir.Linear.Adapter do
   @spec assign_issue(String.t(), String.t()) :: :ok | {:error, term()}
   def assign_issue(issue_id, assignee)
       when is_binary(issue_id) and is_binary(assignee) do
-    with {:ok, assignee_id} <- resolve_assignee_id(assignee),
+    with {:ok, assignment} <- resolve_assignment(assignee),
          :ok <- ensure_issue_in_selected_project(issue_id),
          {:ok, response} <-
-           client_module().graphql(@assign_issue_mutation, %{issueId: issue_id, assigneeId: assignee_id}),
+           client_module().graphql(assignment_mutation(assignment), assignment_variables(issue_id, assignment)),
          true <- get_in(response, ["data", "issueUpdate", "success"]) == true do
       :ok
     else
@@ -217,11 +225,39 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
-  defp resolve_assignee_id(assignee) when is_binary(assignee) do
+  defp resolve_assignment(assignee) when is_binary(assignee) do
     case assignee |> String.trim() do
       "" -> {:error, :missing_linear_assignee}
-      "me" -> resolve_viewer_id()
-      assignee_id -> {:ok, assignee_id}
+      "me" -> resolve_viewer_assignment()
+      assignee_id -> {:ok, {:assignee, assignee_id}}
+    end
+  end
+
+  defp resolve_viewer_assignment do
+    with {:ok, viewer_id} <- resolve_viewer_id() do
+      if app_oauth_configured?() do
+        {:ok, {:delegate, viewer_id}}
+      else
+        {:ok, {:assignee, viewer_id}}
+      end
+    end
+  end
+
+  defp assignment_mutation({:delegate, _delegate_id}), do: @delegate_issue_mutation
+  defp assignment_mutation({:assignee, _assignee_id}), do: @assign_issue_mutation
+
+  defp assignment_variables(issue_id, {:delegate, delegate_id}) do
+    %{issueId: issue_id, delegateId: delegate_id}
+  end
+
+  defp assignment_variables(issue_id, {:assignee, assignee_id}) do
+    %{issueId: issue_id, assigneeId: assignee_id}
+  end
+
+  defp app_oauth_configured? do
+    case Config.settings!().tracker.oauth_access_token do
+      token when is_binary(token) -> String.trim(token) != ""
+      _ -> false
     end
   end
 

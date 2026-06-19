@@ -425,6 +425,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "assignee" => %{
         "id" => "user-1"
       },
+      "delegate" => %{
+        "id" => "agent-1"
+      },
       "labels" => %{"nodes" => [%{"name" => "Backend"}]},
       "inverseRelations" => %{
         "nodes" => [
@@ -457,10 +460,46 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.priority == 2
     assert issue.state == "Todo"
     assert issue.assignee_id == "user-1"
+    assert issue.delegate_id == "agent-1"
     assert issue.assigned_to_worker
   end
 
-  test "linear client marks explicitly unassigned issues as not routed to worker" do
+  test "linear client keeps unassigned issues routed so workers can claim them" do
+    raw_issue = %{
+      "id" => "issue-98",
+      "identifier" => "MT-98",
+      "title" => "Unclaimed task",
+      "state" => %{"name" => "Todo"},
+      "assignee" => nil,
+      "delegate" => nil
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue, "user-1")
+
+    assert issue.assigned_to_worker
+  end
+
+  test "linear client routes delegated issues to the worker" do
+    raw_issue = %{
+      "id" => "issue-97",
+      "identifier" => "MT-97",
+      "title" => "Delegated task",
+      "state" => %{"name" => "Todo"},
+      "assignee" => %{
+        "id" => "user-2"
+      },
+      "delegate" => %{
+        "id" => "agent-1"
+      }
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue, "agent-1")
+
+    assert issue.delegate_id == "agent-1"
+    assert issue.assigned_to_worker
+  end
+
+  test "linear client marks issues assigned to another worker as not routed to worker" do
     raw_issue = %{
       "id" => "issue-99",
       "identifier" => "MT-99",
@@ -468,7 +507,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "state" => %{"name" => "Todo"},
       "assignee" => %{
         "id" => "user-2"
-      }
+      },
+      "delegate" => nil
     }
 
     issue = Client.normalize_issue_for_test(raw_issue, "user-1")

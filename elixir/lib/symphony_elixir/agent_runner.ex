@@ -50,7 +50,7 @@ defmodule SymphonyElixir.AgentRunner do
         send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
         try do
-          with :ok <- prepare_rework_issue_for_run(issue) do
+          with :ok <- prepare_issue_for_run(issue) do
             case run_scope_audit_preflight(workspace, issue, codex_update_recipient, opts, worker_host) do
               :clear ->
                 with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
@@ -74,32 +74,33 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp prepare_rework_issue_for_run(%Issue{} = issue) do
-    if rework_issue?(issue.state) do
-      with :ok <- assign_rework_issue(issue) do
-        update_rework_issue_state(issue)
-      end
+  defp prepare_issue_for_run(%Issue{} = issue) do
+    with :ok <- assign_issue_for_run(issue) do
+      update_start_issue_state(issue)
+    end
+  end
+
+  defp assign_issue_for_run(%Issue{id: issue_id, assignee_id: current_assignee, delegate_id: current_delegate})
+       when is_binary(issue_id) do
+    case configured_assignee() do
+      nil -> :ok
+      ^current_assignee -> :ok
+      ^current_delegate -> :ok
+      assignee -> Tracker.assign_issue(issue_id, assignee)
+    end
+  end
+
+  defp assign_issue_for_run(%Issue{}), do: :ok
+
+  defp update_start_issue_state(%Issue{id: issue_id, state: state}) when is_binary(issue_id) do
+    if start_issue?(state) do
+      Tracker.update_issue_state(issue_id, "In Progress")
     else
       :ok
     end
   end
 
-  defp assign_rework_issue(%Issue{id: issue_id, assignee_id: current_assignee})
-       when is_binary(issue_id) do
-    case configured_assignee() do
-      nil -> :ok
-      ^current_assignee -> :ok
-      assignee -> Tracker.assign_issue(issue_id, assignee)
-    end
-  end
-
-  defp assign_rework_issue(%Issue{}), do: :ok
-
-  defp update_rework_issue_state(%Issue{id: issue_id}) when is_binary(issue_id) do
-    Tracker.update_issue_state(issue_id, "In Progress")
-  end
-
-  defp update_rework_issue_state(%Issue{}), do: :ok
+  defp update_start_issue_state(%Issue{}), do: :ok
 
   defp configured_assignee do
     case Config.settings!().tracker.assignee do
@@ -114,8 +115,8 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp rework_issue?(state) when is_binary(state), do: normalize_issue_state(state) == "rework"
-  defp rework_issue?(_state), do: false
+  defp start_issue?(state) when is_binary(state), do: normalize_issue_state(state) in ["todo", "rework"]
+  defp start_issue?(_state), do: false
 
   defp codex_message_handler(recipient, issue) do
     fn message ->

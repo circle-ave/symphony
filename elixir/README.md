@@ -165,6 +165,8 @@ Notes:
 - `tracker.oauth_access_token` reads from `LINEAR_OAUTH_ACCESS_TOKEN`. Use an OAuth app token
   installed with Linear's `actor=app` flow when Symphony comments should appear from the app instead
   of the personal API-key user.
+- `tracker.assignee: me` delegates claimed issues to the app user when app-actor OAuth is configured;
+  the Linear app install must include `app:assignable`.
 - With app-actor OAuth, `tracker.comment_as`, `tracker.comment_avatar_url`, and
   `tracker.comment_identities` add Linear `createAsUser`/`displayIconUrl` values to generated
   comments. Supported identity keys include `workpad`, `comment_reply`, `scope_audit`, and `system`.

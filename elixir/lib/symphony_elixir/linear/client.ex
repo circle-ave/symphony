@@ -29,6 +29,9 @@ defmodule SymphonyElixir.Linear.Client do
         assignee {
           id
         }
+        delegate {
+          id
+        }
         labels {
           nodes {
             name
@@ -85,6 +88,9 @@ defmodule SymphonyElixir.Linear.Client do
         branchName
         url
         assignee {
+          id
+        }
+        delegate {
           id
         }
         labels {
@@ -612,6 +618,7 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp normalize_issue(issue, assignee_filter) when is_map(issue) do
     assignee = issue["assignee"]
+    delegate = issue["delegate"]
     latest_comment = latest_actionable_comment(issue)
     active_workpad = active_workpad_comment(issue)
 
@@ -625,6 +632,7 @@ defmodule SymphonyElixir.Linear.Client do
       branch_name: issue["branchName"],
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),
+      delegate_id: assignee_field(delegate, "id"),
       latest_comment_id: comment_field(latest_comment, "id"),
       latest_comment_body: comment_field(latest_comment, "body"),
       latest_comment_created_at: parse_datetime(comment_field(latest_comment, "createdAt")),
@@ -635,7 +643,7 @@ defmodule SymphonyElixir.Linear.Client do
       active_workpad_updated_at: parse_datetime(comment_field(active_workpad, "updatedAt") || comment_field(active_workpad, "createdAt")),
       blocked_by: extract_blockers(issue),
       labels: extract_labels(issue),
-      assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),
+      assigned_to_worker: assigned_to_worker?(assignee, delegate, assignee_filter),
       created_at: parse_datetime(issue["createdAt"]),
       updated_at: parse_datetime(issue["updatedAt"])
     }
@@ -717,21 +725,25 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp comment_user_name(_comment), do: nil
 
-  defp assigned_to_worker?(_assignee, nil), do: true
+  defp assigned_to_worker?(_assignee, _delegate, nil), do: true
 
-  defp assigned_to_worker?(%{} = assignee, %{match_values: match_values})
+  defp assigned_to_worker?(assignee, delegate, %{match_values: match_values})
        when is_struct(match_values, MapSet) do
-    assignee
-    |> assignee_id()
-    |> then(fn
-      nil -> false
-      assignee_id -> MapSet.member?(match_values, assignee_id)
-    end)
+    assignee_id = assignee_id(assignee)
+    delegate_id = assignee_id(delegate)
+
+    cond do
+      is_nil(assignee_id) and is_nil(delegate_id) -> true
+      MapSet.member?(match_values, delegate_id) -> true
+      MapSet.member?(match_values, assignee_id) -> true
+      true -> false
+    end
   end
 
-  defp assigned_to_worker?(_assignee, _assignee_filter), do: false
+  defp assigned_to_worker?(_assignee, _delegate, _assignee_filter), do: false
 
   defp assignee_id(%{} = assignee), do: normalize_assignee_match_value(assignee["id"])
+  defp assignee_id(_assignee), do: nil
 
   defp routing_assignee_filter do
     case Config.settings!().tracker.assignee do

@@ -412,8 +412,26 @@ defmodule SymphonyElixir.ExtensionsTest do
     {viewer_query, %{}} = assert_receive_graphql_call(fn query, variables -> variables == %{} and query =~ "viewer" end)
     assert viewer_query =~ "viewer"
 
-    assert_receive_graphql_call(fn _query, variables ->
-      variables == %{issueId: "issue-1", assigneeId: "agent-viewer"}
+    assert_receive_graphql_call(fn query, variables ->
+      query =~ "delegateId" and variables == %{issueId: "issue-1", delegateId: "agent-viewer"}
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
+    flush_graphql_calls()
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok, %{"data" => %{"viewer" => %{"id" => "human-viewer"}}}},
+        {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+      ]
+    )
+
+    assert :ok = Adapter.assign_issue("issue-1", "me")
+    assert_receive_graphql_call(fn query, variables -> variables == %{} and query =~ "viewer" end)
+
+    assert_receive_graphql_call(fn query, variables ->
+      query =~ "assigneeId" and variables == %{issueId: "issue-1", assigneeId: "human-viewer"}
     end)
 
     assert {:error, :missing_linear_assignee} = Adapter.assign_issue("issue-1", " ")

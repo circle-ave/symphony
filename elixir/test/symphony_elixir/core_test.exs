@@ -3681,6 +3681,86 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner claims todo issues before codex work" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-todo-claim-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(workspace_root)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{\"id\":1,\"result\":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-todo-claim\"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-todo-claim\"}}}'
+            printf '%s\\n' '{\"method\":\"turn/completed\"}'
+            exit 0
+            ;;
+          *)
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_assignee: "me",
+        workspace_root: workspace_root,
+        hook_before_run: "touch before-run-ran",
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-todo-claim",
+        identifier: "MT-563",
+        title: "Implement analytics",
+        description: "Build the thing.",
+        state: "Todo",
+        url: "https://example.org/issues/MT-563",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, self(),
+                 max_turns: 1,
+                 issue_state_fetcher: fn ["issue-todo-claim"] ->
+                   {:ok, [%{issue | state: "Done"}]}
+                 end
+               )
+
+      assert_receive {:memory_tracker_assignee_update, "issue-todo-claim", "me"}, 500
+      assert_receive {:memory_tracker_state_update, "issue-todo-claim", "In Progress"}, 500
+
+      assert_receive {:codex_worker_update, "issue-todo-claim", %{event: :prompt_prepared, payload: %{phase: "execution"}}},
+                     500
+
+      workspace = Path.join(workspace_root, "MT-563")
+      assert File.exists?(Path.join(workspace, "before-run-ran"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "review-demo scope audit blockers continue into rework agent" do
     test_root =
       Path.join(
